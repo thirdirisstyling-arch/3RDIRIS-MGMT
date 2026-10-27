@@ -48,6 +48,32 @@
     return isNaN(n) ? null : neg ? -n : n;
   }
 
+  /* frequency words → stored key */
+  const FREQ_WORDS = [
+    ["one-time", /^(one[- ]?time|once|single|none|n\/a)$/i],
+    ["weekly", /^(weekly|every week|wk)$/i],
+    ["biweekly", /^(bi[- ]?weekly|fortnightly|every (2|two) weeks)$/i],
+    ["monthly", /^(monthly|every month|mo)$/i],
+    ["quarterly", /^(quarterly|every (3|three) months)$/i],
+    ["annual", /^(annual|annually|yearly|every year|yr)$/i],
+  ];
+  function normFrequency(s) {
+    const t = String(s || "").trim();
+    const hit = FREQ_WORDS.find(([, re]) => re.test(t));
+    return hit ? hit[0] : "";
+  }
+
+  /* a yearless M/D read relative to the entry's date: the nearest such day */
+  function monthDayNear(md, nearDate) {
+    const m = /^(\d{1,2})\/(\d{1,2})$/.exec(md || "");
+    if (!m || !nearDate) return null;
+    const y = +nearDate.slice(0, 4);
+    const near = new Date(y, +nearDate.slice(5, 7) - 1, +nearDate.slice(8, 10));
+    const options = [y - 1, y, y + 1].map((yy) => valid(yy, +m[1], +m[2])).filter(Boolean);
+    options.sort((a, b) => Math.abs(new Date(a.replace(/-/g, "/")) - near) - Math.abs(new Date(b.replace(/-/g, "/")) - near));
+    return options[0] || null;
+  }
+
   const INCOME_WORDS = /^(income|deposit|credit|revenue|payment received)$/i;
   const TYPE_WORDS = /^(income|expense|expenses|deposit|credit|debit|revenue|payment received|withdrawal)$/i;
   const BARE_MONTH_DAY = /^\d{1,2}\/\d{1,2}$/;
@@ -60,6 +86,8 @@
     category: ["category", "categories"],
     scope: ["purse", "scope"],
     client: ["client", "customer"],
+    frequency: ["frequency", "freq", "recurrence", "repeats", "cadence"],
+    due: ["due", "due date", "due on"],
     notes: ["notes", "note"],
   };
 
@@ -89,6 +117,12 @@
     const typeIdx = cells.findIndex((c, i) => !used.has(i) && TYPE_WORDS.test(c));
     if (typeIdx >= 0) used.add(typeIdx);
 
+    const freqIdx = cells.findIndex((c, i) => !used.has(i) && normFrequency(c));
+    if (freqIdx >= 0) used.add(freqIdx);
+
+    const mdIdx = cells.findIndex((c, i) => !used.has(i) && BARE_MONTH_DAY.test(c));
+    if (mdIdx >= 0) used.add(mdIdx);
+
     const isText = (i) => !used.has(i) && cells[i] && !BARE_MONTH_DAY.test(cells[i]) && parseMoney(cells[i]) === null;
     let descIdx = -1;
     for (let i = 0; i < cells.length; i++) if (isText(i)) { descIdx = i; break; }
@@ -104,15 +138,19 @@
       type: typeIdx >= 0 ? cells[typeIdx] : "",
       description: descIdx >= 0 ? cells[descIdx] : "",
       category: catIdx >= 0 ? cells[catIdx] : "",
+      frequency: freqIdx >= 0 ? cells[freqIdx] : "",
+      monthDay: mdIdx >= 0 ? cells[mdIdx] : "",
       notes: notes.join(" · "),
     };
   }
 
   /**
-   * parse(text) → [{ ok, error, date, description, type, amount, category, scope, client, notes, raw }]
+   * parse(text, { yearlessAsDue }) →
+   *   [{ ok, error, date, description, type, amount, category, scope, client, frequency, dueDate, notes, raw }]
    * amount is always positive; type is "income" or "expense".
+   * yearlessAsDue: read a bare M/D cell (no year) as the due date instead of ignoring it.
    */
-  function parse(text) {
+  function parse(text, opts = {}) {
     const rows = splitRows(text || "");
     if (!rows.length) return [];
     const map = headerMap(rows[0]);
@@ -126,6 +164,7 @@
       return {
         date: get("date"), amount: get("amount"), type: get("type"), description: get("description"),
         category: get("category"), scope: get("scope").toLowerCase(), client: get("client"),
+        frequency: get("frequency"), due: get("due"),
         notes: [get("notes"), ...extra].filter(Boolean).join(" · "), raw: cells,
       };
     });
@@ -140,8 +179,11 @@
         ok: true, error: "", date: date || "", description: f.description, amount: amt === null ? 0 : Math.round(Math.abs(amt) * 100) / 100,
         type: f.type ? (INCOME_WORDS.test(f.type) ? "income" : "expense") : anyNegative && amt > 0 ? "income" : "expense",
         category: f.category, scope: f.scope === "business" || f.scope === "personal" ? f.scope : "",
-        client: f.client || "", notes: f.notes, raw: f.raw,
+        client: f.client || "", frequency: normFrequency(f.frequency), dueDate: "", notes: f.notes, raw: f.raw,
       };
+      if (f.frequency && !out.frequency) out.notes = [f.frequency, out.notes].filter(Boolean).join(" · ");
+      if (f.due) out.dueDate = parseDate(f.due) || monthDayNear(f.due, date) || "";
+      else if (f.monthDay && opts.yearlessAsDue) out.dueDate = monthDayNear(f.monthDay, date) || "";
       if (!date) out.error = f.date ? `Unreadable date “${f.date}”` : "No date found";
       else if (amt === null || amt === 0) out.error = f.amount ? `Unreadable amount “${f.amount}”` : "No amount found";
       else if (!f.description) out.error = "No description";
@@ -150,7 +192,7 @@
     });
   }
 
-  const api = { parse, splitRows, parseDate, parseMoney };
+  const api = { parse, splitRows, parseDate, parseMoney, normFrequency };
   if (typeof module !== "undefined") module.exports = api;
   else root.Importer = api;
 })(typeof window !== "undefined" ? window : globalThis);

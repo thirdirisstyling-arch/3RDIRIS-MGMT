@@ -400,3 +400,46 @@ td.actions { text-align: right; white-space: nowrap; }
 .import-summary { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 0 0 12px; font-size: 16px; }
 .tag.new { border-color: var(--plum); color: #c7a9cf; }
 .tag.dupe, .tag.err { border-color: #6d3e44; color: var(--rose); }
+
+/* ── sortable columns, frequency, ledger calendar ── */
+th button.sort {
+  all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+  font: inherit; letter-spacing: inherit; color: inherit;
+}
+th.num button.sort { flex-direction: row-reverse; }
+th button.sort .arrow { font-size: 9px; color: var(--smoke); }
+th button.sort:hover, th button.sort.on { color: var(--gold); }
+th button.sort.on .arrow { color: var(--gold); }
+th button.sort:focus-visible { outline: 1px solid var(--gold); outline-offset: 3px; }
+.tag.freq { border-color: var(--gold-dim); color: var(--parchment); }
+.show-sm { display: none; }
+
+label.check { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; color: var(--parchment); cursor: pointer; }
+label.check input { width: auto; }
+label.check code { color: var(--gold); font-size: 13px; }
+
+.calendar .ev.exp { background: rgba(192, 122, 128, .16); border-left-color: var(--rose); }
+.calendar .ev.inc { background: rgba(147, 169, 140, .18); border-left-color: var(--sage); }
+.calendar .ev.due { background: rgba(195, 165, 104, .14); border-left-color: var(--gold); color: var(--gold); }
+.calendar .ev.expected { background: transparent; border: 1px dashed var(--plum); border-left-width: 1px; color: #c7a9cf; font-style: italic; }
+.calendar .ev[data-tx]:hover, .calendar .ev[data-expected]:hover { filter: brightness(1.3); }
+.calendar .net { font-size: 12px; color: var(--ash); font-variant-numeric: tabular-nums; }
+.calendar .net.pos { color: var(--sage); }
+.cal-key { display: flex; flex-wrap: wrap; gap: 10px; margin: 14px 0 0; font-size: 13px; }
+.cal-key .ev { padding: 1px 8px; border-radius: 3px; border-left: 2px solid; }
+.cal-key .ev.exp { background: rgba(192, 122, 128, .16); border-color: var(--rose); }
+.cal-key .ev.inc { background: rgba(147, 169, 140, .18); border-color: var(--sage); }
+.cal-key .ev.due { background: rgba(195, 165, 104, .14); border-color: var(--gold); color: var(--gold); }
+.cal-key .ev.expected { border: 1px dashed var(--plum); color: #c7a9cf; font-style: italic; }
+.sub-h { font-family: var(--font-sc); font-size: 16px; letter-spacing: .06em; color: var(--ash); margin: 14px 0 2px; }
+
+@media (max-width: 860px) {
+  .calendar .ev.exp { background: var(--rose); }
+  .calendar .ev.inc { background: var(--sage); }
+  .calendar .ev.due { background: var(--gold); }
+  .calendar .ev.expected { background: transparent; border: 1px dashed var(--plum); height: 5px; }
+  .calendar .net { display: none; }
+}
+@media (max-width: 600px) {
+  .show-sm { display: inline; }
+}

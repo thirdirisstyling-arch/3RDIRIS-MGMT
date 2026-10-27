@@ -38,6 +38,7 @@
     const d = parseYmd(s);
     return `<div class="date-chip"><span class="m">${MONTHS[d.getMonth()].slice(0, 3)}</span><span class="d">${d.getDate()}</span></div>`;
   };
+  const stepDays = (s, n) => { const d = parseYmd(s); d.setDate(d.getDate() + n); return ymd(d); };
   const relDay = (s) => {
     const diff = Math.round((parseYmd(s) - parseYmd(todayStr())) / 864e5);
     if (diff === 0) return "today";
@@ -45,6 +46,70 @@
     if (diff === -1) return "yesterday";
     return diff > 0 ? `in ${diff} days` : `${-diff} days ago`;
   };
+
+  /* ── frequency & recurrence ─────────────────── */
+  const FREQUENCIES = [
+    ["one-time", "One-time"], ["weekly", "Weekly"], ["biweekly", "Every 2 weeks"],
+    ["monthly", "Monthly"], ["quarterly", "Quarterly"], ["annual", "Annual"],
+  ];
+  const freqLabel = (f) => (FREQUENCIES.find(([k]) => k === f) || [, ""])[1];
+  const isRecurring = (f) => f && f !== "one-time";
+  function stepDate(s, freq, n = 1) {
+    const d = parseYmd(s);
+    if (freq === "weekly") d.setDate(d.getDate() + 7 * n);
+    else if (freq === "biweekly") d.setDate(d.getDate() + 14 * n);
+    else {
+      const months = { monthly: 1, quarterly: 3, annual: 12 }[freq] * n;
+      const day = d.getDate();
+      d.setDate(1);
+      d.setMonth(d.getMonth() + months);
+      // the 31st in a 30-day month lands on the 30th, not the 1st of the next
+      d.setDate(Math.min(day, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()));
+    }
+    return ymd(d);
+  }
+
+  /* upcoming copies of recurring entries, between from and to (inclusive).
+     Each series (same kind, description, frequency) projects forward from its latest entry. */
+  function expectedEntries(from, to) {
+    const latest = {};
+    D().transactions.filter((t) => isRecurring(t.frequency)).forEach((t) => {
+      const k = [t.type, t.description.trim().toLowerCase(), t.frequency].join("|");
+      if (!latest[k] || t.date > latest[k].date) latest[k] = t;
+    });
+    const out = [];
+    Object.values(latest).forEach((t) => {
+      const anchor = t.dueDate || t.date;
+      for (let n = 1; n < 400; n++) {
+        const when = stepDate(anchor, t.frequency, n);
+        if (when > to) break;
+        if (when >= from) out.push({ source: t, date: when });
+      }
+    });
+    return out.sort((a, b) => a.date.localeCompare(b.date));
+  }
+
+  function logExpected(e) {
+    const t = e.source;
+    editTransaction({
+      type: t.type, description: t.description, amount: t.amount, scope: t.scope, categoryId: t.categoryId,
+      clientId: t.clientId, frequency: t.frequency, date: e.date, dueDate: t.dueDate ? e.date : "",
+    });
+  }
+
+  function dueLabel(s) {
+    if (!s) return "";
+    const diff = Math.round((parseYmd(s) - parseYmd(todayStr())) / 864e5);
+    if (diff === 0) return "due today";
+    if (diff === 1) return "due tomorrow";
+    if (diff > 1 && diff <= 14) return `due in ${diff} days`;
+    return `due ${fmtDate(s, { month: "short", day: "numeric" })}`;
+  }
+
+  /* small per-browser view preferences */
+  const PREFS_KEY = "3rdiris.prefs";
+  const prefs = (() => { try { return JSON.parse(localStorage.getItem(PREFS_KEY)) || {}; } catch { return {}; } })();
+  const savePrefs = () => { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch {} };
 
   const clientById = (id) => D().clients.find((c) => c.id === id);
   const catById = (id) => D().categories.find((c) => c.id === id);
@@ -204,7 +269,7 @@
     const isNew = !tx.id;
     openForm({
       title: isNew ? (tx.type === "income" ? "Record Income" : "Record Expense") : "Amend Entry",
-      values: { type: "expense", date: todayStr(), scope: "personal", ...tx },
+      values: { type: "expense", date: todayStr(), scope: "personal", frequency: "one-time", ...tx },
       fields: [
         { name: "type", label: "Kind", type: "segmented", options: [{ value: "expense", label: "Expense" }, { value: "income", label: "Income" }], span2: true },
         { name: "description", label: "Description", required: true, placeholder: "e.g. beeswax candles", span2: true },
@@ -212,6 +277,8 @@
         { name: "date", label: "Date", type: "date", required: true },
         { name: "scope", label: "Purse", type: "segmented", options: [{ value: "personal", label: "Personal" }, { value: "business", label: "Business" }] },
         { name: "categoryId", label: "Category", type: "select", options: categoryOptions() },
+        { name: "frequency", label: "Frequency", type: "select", options: FREQUENCIES.map(([value, label]) => ({ value, label })) },
+        { name: "dueDate", label: "Due date", type: "date" },
         { name: "clientId", label: "Client", type: "select", options: clientOptions(), span2: true },
         { name: "notes", label: "Notes", type: "textarea", span2: true },
       ],
@@ -295,7 +362,7 @@
 
   /* ── bulk import ───────────────────────────── */
   const NEW_CAT_COLORS = ["#b48a5a", "#7f98a8", "#a07fa8", "#93a98c", "#c07a80", "#6f8f9a", "#c3a568", "#8b6a95"];
-  let importDraft = { text: "", scope: "personal" };
+  let importDraft = { text: "", scope: "personal", yearlessAsDue: false };
 
   function openImport() {
     modal.classList.add("wide");
@@ -309,11 +376,12 @@
   function importStep1() {
     $("#modalBody").innerHTML = `
       <p class="import-help">Paste rows copied from a spreadsheet, or choose a CSV file. Each row needs a <b>date</b>, a <b>description</b> and an <b>amount</b>.
-        A column saying <code>Income</code> or <code>Expense</code> sets the kind, and the column after it is read as the category.
-        Anything else (account, frequency, status) is kept in the notes. A header row such as <code>date,description,amount,category</code> also works.</p>
+        A column saying <code>Income</code> or <code>Expense</code> sets the kind, the column after it is read as the category, and words like <code>Monthly</code> or <code>Annual</code> set the frequency.
+        Anything else (account, status) is kept in the notes. A header row such as <code>date,description,amount,category,frequency,due</code> also works.</p>
       <textarea class="import-text" spellcheck="false" placeholder="2026-10-07&#9;Canva Pro&#9;Expense&#9;Subscriptions&#9;$15.00">${esc(importDraft.text)}</textarea>
       <div class="toolbar" style="margin:12px 0 0">
         <label class="btn ghost sm" style="display:inline-block">Choose file…<input type="file" accept=".csv,.tsv,.txt,text/csv,text/plain" id="importCsv" hidden></label>
+        <label class="check"><input type="checkbox" id="importYearless" ${importDraft.yearlessAsDue ? "checked" : ""}> Read a date without a year (like <code>10/6</code>) as the due date</label>
         <span class="spacer"></span>
         <span style="color:var(--ash);font-family:var(--font-sc);font-size:15px">Purse</span>
         <div class="segmented" id="importScope">${["personal", "business"].map((v) => `<button type="button" data-value="${v}" class="${importDraft.scope === v ? "on" : ""}">${v[0].toUpperCase() + v.slice(1)}</button>`).join("")}</div>
@@ -322,6 +390,7 @@
     $("#modalFoot").innerHTML = `<span class="spacer"></span><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary">Preview</button>`;
     const ta = $(".import-text", modal);
     ta.addEventListener("input", () => (importDraft.text = ta.value));
+    $("#importYearless", modal).addEventListener("change", (e) => (importDraft.yearlessAsDue = e.target.checked));
     $("#importCsv", modal).addEventListener("change", async (e) => {
       const f = e.target.files[0];
       if (f) { ta.value = importDraft.text = await f.text(); }
@@ -333,7 +402,9 @@
       $$("#importScope button", modal).forEach((x) => x.classList.toggle("on", x === b));
     });
     modalSubmit = () => {
-      const rows = Importer.parse(importDraft.text);
+      const rows = Importer.parse(importDraft.text, { yearlessAsDue: importDraft.yearlessAsDue })
+        // oldest first; unreadable rows (no date) at the end
+        .sort((a, b) => (a.date || "9999").localeCompare(b.date || "9999"));
       if (!rows.length) { $("#formError").textContent = "Paste some rows first."; return false; }
       importStep2(rows);
       return false;
@@ -344,14 +415,23 @@
     const catByName = (n) => D().categories.find((c) => c.name.toLowerCase() === n.toLowerCase());
     const clientByName = (n) => D().clients.find((c) => c.name.toLowerCase() === n.toLowerCase());
     const key = (t) => [t.date, t.type, Math.round(t.amount * 100), (t.description || "").trim().toLowerCase()].join("|");
-    const existing = new Set(D().transactions.map(key));
+    const existing = new Map(D().transactions.map((t) => [key(t), t]));
 
     rows.forEach((r) => {
       r.scope = r.scope || importDraft.scope;
-      r.duplicate = r.ok && existing.has(key(r));
-      r.include = r.ok && !r.duplicate;
+      const match = r.ok ? existing.get(key(r)) : null;
+      r.duplicate = !!match;
+      // a re-imported row can still fill in a frequency or due date the existing entry lacks
+      r.update = null;
+      if (match) {
+        const fields = {};
+        if (r.frequency && !match.frequency) fields.frequency = r.frequency;
+        if (r.dueDate && !match.dueDate) fields.dueDate = r.dueDate;
+        if (Object.keys(fields).length) r.update = { id: match.id, fields };
+      }
+      r.include = r.ok && (!r.duplicate || !!r.update);
       // income has no budget category; keep any label it carried as a note
-      r.newCat = r.type === "expense" && r.category && !catByName(r.category);
+      r.newCat = !r.duplicate && r.type === "expense" && r.category && !catByName(r.category);
     });
     const newCats = [...new Set(rows.filter((r) => r.newCat).map((r) => r.category.trim()))];
 
@@ -360,25 +440,28 @@
       const inc = chosen.filter((r) => r.type === "income").reduce((s, r) => s + r.amount, 0);
       const exp = chosen.filter((r) => r.type === "expense").reduce((s, r) => s + r.amount, 0);
       const dupes = rows.filter((r) => r.duplicate).length, bad = rows.filter((r) => !r.ok).length;
+      const updates = chosen.filter((r) => r.update).length;
       $(".import-summary", modal).innerHTML = `
         <span><b>${chosen.length}</b> of ${rows.length} rows selected</span>
         <span class="pos">+${money(inc)} income</span><span>−${money(exp)} expenses</span>
-        ${dupes ? `<span class="neg">${dupes} already in the ledger</span>` : ""}
+        ${dupes ? `<span class="neg">${dupes} already in the ledger${updates ? `, ${updates} will be filled in` : ""}</span>` : ""}
         ${bad ? `<span class="neg">${bad} unreadable</span>` : ""}
         ${newCats.length ? `<span>New categories: ${newCats.map((n) => `<span class="tag new">${esc(n)}</span>`).join(" ")}</span>` : ""}`;
-      $("[data-import-go]", modal).textContent = `Import ${chosen.length}`;
+      $("[data-import-go]", modal).textContent = updates === chosen.length && updates ? `Update ${updates}` : `Import ${chosen.length - updates}${updates ? ` + update ${updates}` : ""}`;
       $("[data-import-go]", modal).disabled = !chosen.length;
     };
 
     $("#modalBody").innerHTML = `
       <div class="import-summary"></div>
       <div class="import-preview"><table>
-        <thead><tr><th><input type="checkbox" id="importAll" aria-label="Select all" style="width:auto"></th><th>Date</th><th>Description</th><th>Category</th><th class="num">Amount</th><th class="hide-sm">Notes</th></tr></thead>
+        <thead><tr><th><input type="checkbox" id="importAll" aria-label="Select all" style="width:auto"></th><th>Date</th><th>Description</th><th>Category</th><th class="hide-sm">Frequency</th><th class="hide-sm">Due</th><th class="num">Amount</th><th class="hide-sm">Notes</th></tr></thead>
         <tbody>${rows.map((r, i) => `<tr class="${r.include ? "" : "skip"}">
           <td><input type="checkbox" data-row="${i}" ${r.include ? "checked" : ""} ${r.ok ? "" : "disabled"} style="width:auto" aria-label="Include row ${i + 1}"></td>
           <td style="white-space:nowrap">${r.date ? fmtDate(r.date, { month: "short", day: "numeric", year: "numeric" }) : "—"}</td>
-          <td>${esc(r.description || r.raw.join(" "))}${!r.ok ? ` <span class="tag err">${esc(r.error)}</span>` : r.duplicate ? ` <span class="tag dupe">already imported</span>` : ""}</td>
+          <td>${esc(r.description || r.raw.join(" "))}${!r.ok ? ` <span class="tag err">${esc(r.error)}</span>` : r.update ? ` <span class="tag new">adds ${esc(Object.keys(r.update.fields).map((k) => (k === "dueDate" ? "due date" : k)).join(" & "))}</span>` : r.duplicate ? ` <span class="tag dupe">already imported</span>` : ""}</td>
           <td>${r.type === "income" ? `<span class="tag"><span class="dot" style="background:var(--sage)"></span>income</span>` : r.category ? `<span class="tag ${r.newCat ? "new" : ""}">${esc(r.category)}${r.newCat ? " · new" : ""}</span>` : `<small><i>uncategorized</i></small>`}</td>
+          <td class="hide-sm">${r.frequency ? esc(freqLabel(r.frequency)) : "<small>—</small>"}</td>
+          <td class="hide-sm" style="white-space:nowrap">${r.dueDate ? fmtDate(r.dueDate, { month: "short", day: "numeric" }) : "<small>—</small>"}</td>
           <td class="num ${r.type === "income" ? "pos" : ""}">${r.ok ? (r.type === "income" ? "+" : "−") + money(r.amount) : ""}</td>
           <td class="note hide-sm">${esc([r.type === "income" && r.category && !/^income$/i.test(r.category) ? r.category : "", r.notes].filter(Boolean).join(" · "))}</td>
         </tr>`).join("")}</tbody></table></div>
@@ -408,8 +491,10 @@
     syncAll(); render();
 
     modalSubmit = () => {
-      const chosen = rows.filter((r) => r.include);
-      if (!chosen.length) return false;
+      const picked = rows.filter((r) => r.include);
+      if (!picked.length) return false;
+      const updates = picked.filter((r) => r.update).map((r) => r.update);
+      const chosen = picked.filter((r) => !r.duplicate);
       const created = {};
       const cats = [];
       chosen.filter((r) => r.newCat).forEach((r) => {
@@ -427,14 +512,21 @@
           r.client && !client ? r.client : "",
           r.notes,
         ].filter(Boolean).join(" · ");
-        return { type: r.type, amount: r.amount, date: r.date, description: r.description.trim(), scope: r.scope, categoryId: cat ? cat.id : "", clientId: client ? client.id : "", notes };
+        return {
+          type: r.type, amount: r.amount, date: r.date, description: r.description.trim(), scope: r.scope,
+          categoryId: cat ? cat.id : "", clientId: client ? client.id : "", frequency: r.frequency || "", dueDate: r.dueDate || "", notes,
+        };
       });
-      const latest = txs.map((t) => t.date).sort().pop();
+      const latest = picked.map((r) => r.date).sort().pop();
       ui.ledgerMonth = new Date(+latest.slice(0, 4), +latest.slice(5, 7) - 1, 1);
-      importDraft = { text: "", scope: importDraft.scope };
-      Store.bulkAdd(txs, cats);
+      importDraft = { ...importDraft, text: "" };
+      Store.bulkAdd(txs, cats, updates);
       if (location.hash !== "#ledger") location.hash = "ledger";
-      toast(`${txs.length} entries inscribed${cats.length ? `, ${cats.length} new categor${cats.length === 1 ? "y" : "ies"}` : ""}.`);
+      toast([
+        txs.length ? `${txs.length} entries inscribed` : "",
+        updates.length ? `${updates.length} updated` : "",
+        cats.length ? `${cats.length} new categor${cats.length === 1 ? "y" : "ies"}` : "",
+      ].filter(Boolean).join(", ") + ".");
       return true;
     };
   }
@@ -479,6 +571,9 @@
     ledgerType: "all",
     ledgerScope: "all",
     ledgerSearch: "",
+    ledgerView: prefs.ledgerView === "calendar" ? "calendar" : "list",
+    ledgerSort: prefs.ledgerSort && prefs.ledgerSort.key ? prefs.ledgerSort : { key: "date", dir: "desc" },
+    ledgerDay: todayStr(),
     coffersMonth: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
     almanacMonth: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
     almanacDay: todayStr(),
@@ -504,6 +599,11 @@
         return { label: c ? c.name : "Uncategorized", color: c ? c.color : "#6f6774", value: v };
       }).sort((a, b) => b.value - a.value);
       const q = QUOTES[Math.floor(Date.now() / 864e5) % QUOTES.length];
+      const horizon = stepDays(today, 14);
+      const dueSoon = [
+        ...d.transactions.filter((t) => t.dueDate && t.dueDate >= today && t.dueDate <= horizon).map((t) => ({ t, date: t.dueDate })),
+        ...expectedEntries(today, horizon).map((e) => ({ t: e.source, date: e.date, expected: true })),
+      ].sort((a, b) => a.date.localeCompare(b.date)).slice(0, 8);
       const isEmpty = !d.transactions.length && !d.appointments.length && !d.clients.length;
       const name = d.settings.ownerName ? `, ${esc(d.settings.ownerName)}` : "";
 
@@ -546,6 +646,12 @@
           </div>
           <div class="grid" style="align-content:start">
             <div class="card">
+              <div class="card-head"><h2>Due &amp; expected</h2><small>next 14 days</small></div>
+              ${dueSoon.length ? `<ul class="list">${dueSoon.map((x) => `<li ${x.expected ? `data-expected="${x.t.id}@${x.date}"` : `data-tx="${x.t.id}"`} style="cursor:pointer">${dateChip(x.date)}
+                <div class="grow"><span class="title">${x.expected ? "↻ " : ""}${esc(x.t.description)}</span><span class="meta">${esc([x.expected ? "expected" : dueLabel(x.date), relDay(x.date), isRecurring(x.t.frequency) ? freqLabel(x.t.frequency) : ""].filter(Boolean).join(" · "))}</span></div>
+                <span class="${x.t.type === "income" ? "pos" : ""}" style="font-variant-numeric:tabular-nums">${x.t.type === "income" ? "+" : "−"}${money(x.t.amount)}</span></li>`).join("")}</ul>` : empty("⏳", "Nothing due in the next two weeks.")}
+            </div>
+            <div class="card">
               <div class="card-head"><h2>The codex</h2><a href="#codex">clients →</a></div>
               <div class="grid trio" style="gap:8px;text-align:center">
                 ${["lead", "active", "past"].map((s) => `<div><div class="stat"><div class="value">${d.clients.filter((c) => c.status === s).length}</div><div class="label">${s}</div></div></div>`).join("")}
@@ -558,6 +664,10 @@
     bind(root) {
       $$("[data-appt]", root).forEach((li) => li.addEventListener("click", () => editAppointment(D().appointments.find((a) => a.id === li.dataset.appt))));
       $$("[data-tx]", root).forEach((li) => li.addEventListener("click", () => editTransaction(D().transactions.find((t) => t.id === li.dataset.tx))));
+      $$("[data-expected]", root).forEach((li) => li.addEventListener("click", () => {
+        const [id, date] = li.dataset.expected.split("@");
+        logExpected({ source: D().transactions.find((t) => t.id === id), date });
+      }));
     },
   };
 
@@ -569,29 +679,59 @@
       <span class="${x.type === "income" ? "pos" : ""}" style="font-variant-numeric:tabular-nums">${x.type === "income" ? "+" : "−"}${money(x.amount)}</span></li>`;
   }
 
+  const SORTS = {
+    date: (a, b) => a.date.localeCompare(b.date),
+    due: (a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"),
+    description: (a, b) => a.description.localeCompare(b.description, undefined, { sensitivity: "base" }),
+    category: (a, b) => catName(a).localeCompare(catName(b)),
+    frequency: (a, b) => freqRank(a) - freqRank(b),
+    amount: (a, b) => a.amount - b.amount,
+  };
+  const catName = (t) => (t.type === "income" ? "income" : (catById(t.categoryId) || {}).name || "~");
+  const freqRank = (t) => { const i = FREQUENCIES.findIndex(([k]) => k === t.frequency); return i < 0 ? 99 : i; };
+  const signed = (t) => (t.type === "income" ? t.amount : -t.amount);
+
+  function sortTx(rows) {
+    const { key, dir } = ui.ledgerSort;
+    const cmp = SORTS[key] || SORTS.date;
+    const m = dir === "asc" ? 1 : -1;
+    // ties fall back to date, newest first, then order of entry
+    return rows.sort((a, b) => m * cmp(a, b) || b.date.localeCompare(a.date) || (b.createdAt || "").localeCompare(a.createdAt || ""));
+  }
+
+  /* the ledger's kind, purse and search filters (not the month) */
+  function passesFilters(t) {
+    if (ui.ledgerType !== "all" && t.type !== ui.ledgerType) return false;
+    if (ui.ledgerScope !== "all" && t.scope !== ui.ledgerScope) return false;
+    const q = ui.ledgerSearch.toLowerCase();
+    if (!q) return true;
+    const c = catById(t.categoryId), cl = clientById(t.clientId);
+    return [t.description, t.notes, c && c.name, cl && cl.name, freqLabel(t.frequency)].some((s) => s && s.toLowerCase().includes(q));
+  }
+  const ledgerFiltered = (key) => D().transactions.filter((t) => inMonth(t.date, key) && passesFilters(t));
+
+  const catTag = (t) => {
+    const c = catById(t.categoryId);
+    return t.type === "income"
+      ? `<span class="tag"><span class="dot" style="background:var(--sage)"></span>income</span>`
+      : `<span class="tag"><span class="dot" style="background:${esc(c ? c.color : "#6f6774")}"></span>${esc(c ? c.name : "uncategorized")}</span>`;
+  };
+
   views.ledger = {
     title: "Ledger",
     actions: () => `<button class="btn ghost" data-act="import">Import</button><button class="btn" data-act="add-income">+ Income</button><button class="btn primary" data-act="add-expense">+ Expense</button>`,
     render() {
       const key = monthKey(ui.ledgerMonth);
-      const q = ui.ledgerSearch.toLowerCase();
-      const rows = D().transactions
-        .filter((t) => inMonth(t.date, key))
-        .filter((t) => ui.ledgerType === "all" || t.type === ui.ledgerType)
-        .filter((t) => ui.ledgerScope === "all" || t.scope === ui.ledgerScope)
-        .filter((t) => {
-          if (!q) return true;
-          const c = catById(t.categoryId), cl = clientById(t.clientId);
-          return [t.description, t.notes, c && c.name, cl && cl.name].some((s) => s && s.toLowerCase().includes(q));
-        })
-        .sort((a, b) => b.date.localeCompare(a.date) || (b.createdAt || "").localeCompare(a.createdAt || ""));
+      const rows = ledgerFiltered(key);
       const inc = rows.filter((r) => r.type === "income").reduce((s, r) => s + r.amount, 0);
       const exp = rows.filter((r) => r.type === "expense").reduce((s, r) => s + r.amount, 0);
       const seg = (name, cur, opts) => `<div class="segmented" data-ui="${name}">${opts.map(([v, l]) => `<button class="${cur === v ? "on" : ""}" data-value="${v}">${l}</button>`).join("")}</div>`;
+      const filtered = ui.ledgerSearch || ui.ledgerType !== "all" || ui.ledgerScope !== "all";
 
       return `
         <div class="toolbar">
           <div class="month-nav"><button class="icon-btn" data-month="-1" aria-label="Previous month">‹</button><span>${monthLabel(ui.ledgerMonth)}</span><button class="icon-btn" data-month="1" aria-label="Next month">›</button></div>
+          ${seg("ledgerView", ui.ledgerView, [["list", "List"], ["calendar", "Calendar"]])}
           ${seg("ledgerType", ui.ledgerType, [["all", "All"], ["expense", "Expenses"], ["income", "Income"]])}
           ${seg("ledgerScope", ui.ledgerScope, [["all", "Both purses"], ["personal", "Personal"], ["business", "Business"]])}
           <span class="spacer"></span>
@@ -603,36 +743,129 @@
           <div class="card stat"><div class="label">Expenses</div><div class="value">${money(exp)}</div></div>
           <div class="card stat"><div class="label">Balance</div><div class="value ${inc - exp >= 0 ? "pos" : "neg"}">${money(inc - exp)}</div></div>
         </div>
-        <div class="card">
-          ${rows.length ? `<div class="table-wrap"><table>
-            <thead><tr><th>Date</th><th>Description</th><th class="hide-sm">Category / Client</th><th class="hide-sm">Purse</th><th class="num">Amount</th></tr></thead>
-            <tbody>${rows.map((t) => {
-              const c = catById(t.categoryId), cl = clientById(t.clientId);
-              const cat = t.type === "income" ? `<span class="tag"><span class="dot" style="background:var(--sage)"></span>income</span>` : `<span class="tag"><span class="dot" style="background:${esc(c ? c.color : "#6f6774")}"></span>${esc(c ? c.name : "uncategorized")}</span>`;
-              return `<tr data-tx="${t.id}" style="cursor:pointer">
-                <td style="white-space:nowrap">${fmtDate(t.date, { month: "short", day: "numeric" })}</td>
-                <td>${esc(t.description)}${t.notes ? `<br><small><i>${esc(t.notes)}</i></small>` : ""}</td>
-                <td class="hide-sm">${cat}${cl ? ` <small>· ${esc(cl.name)}</small>` : ""}</td>
-                <td class="hide-sm"><span class="tag ${t.scope === "business" ? "biz" : ""}">${esc(t.scope)}</span></td>
-                <td class="num ${t.type === "income" ? "pos" : ""}">${t.type === "income" ? "+" : "−"}${money(t.amount)}</td>
-              </tr>`;
-            }).join("")}</tbody></table></div>` : empty("✒", q || ui.ledgerType !== "all" || ui.ledgerScope !== "all" ? "No entries match." : "No entries for this month yet.")}
-        </div>`;
+        ${ui.ledgerView === "calendar" ? ledgerCalendar() : ledgerTable(sortTx(rows), filtered)}`;
     },
     bind(root) {
-      $$("[data-month]", root).forEach((b) => b.addEventListener("click", () => { ui.ledgerMonth = addMonths(ui.ledgerMonth, +b.dataset.month); render(); }));
+      $$("[data-month]", root).forEach((b) => b.addEventListener("click", () => {
+        ui.ledgerMonth = addMonths(ui.ledgerMonth, +b.dataset.month);
+        ui.ledgerDay = monthKey(ui.ledgerMonth) === monthKey(new Date()) ? todayStr() : ymd(ui.ledgerMonth);
+        render();
+      }));
       bindSegments(root);
       const s = $("#ledgerSearch", root);
       s.addEventListener("input", () => { ui.ledgerSearch = s.value; render(); const n = $("#ledgerSearch"); n.focus(); n.setSelectionRange(n.value.length, n.value.length); });
-      $$("[data-tx]", root).forEach((tr) => tr.addEventListener("click", () => editTransaction(D().transactions.find((t) => t.id === tr.dataset.tx))));
+      $$("[data-tx]", root).forEach((el) => el.addEventListener("click", (e) => { e.stopPropagation(); editTransaction(D().transactions.find((t) => t.id === el.dataset.tx)); }));
+      $$("[data-sort]", root).forEach((b) => b.addEventListener("click", () => {
+        const k = b.dataset.sort;
+        // a new column starts newest/largest first, except text columns which start A→Z
+        const firstDir = ["description", "category", "frequency"].includes(k) ? "asc" : "desc";
+        ui.ledgerSort = ui.ledgerSort.key === k ? { key: k, dir: ui.ledgerSort.dir === "asc" ? "desc" : "asc" } : { key: k, dir: firstDir };
+        prefs.ledgerSort = ui.ledgerSort; savePrefs();
+        render();
+      }));
+      $$("[data-lday]", root).forEach((b) => {
+        b.addEventListener("click", () => {
+          ui.ledgerDay = b.dataset.lday;
+          if (b.dataset.lday.slice(0, 7) !== monthKey(ui.ledgerMonth)) ui.ledgerMonth = new Date(+b.dataset.lday.slice(0, 4), +b.dataset.lday.slice(5, 7) - 1, 1);
+          render();
+        });
+        b.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); b.click(); } });
+      });
+      $$("[data-expected]", root).forEach((el) => el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const [id, date] = el.dataset.expected.split("@");
+        logExpected({ source: D().transactions.find((t) => t.id === id), date });
+      }));
     },
   };
+
+  function ledgerTable(rows, filtered) {
+    if (!rows.length) return `<div class="card">${empty("✒", filtered ? "No entries match." : "No entries for this month yet.")}</div>`;
+    const { key, dir } = ui.ledgerSort;
+    const th = (k, label, cls = "") => `<th class="${cls}" aria-sort="${key === k ? (dir === "asc" ? "ascending" : "descending") : "none"}"><button class="sort ${key === k ? "on" : ""}" data-sort="${k}">${label}<span class="arrow">${key === k ? (dir === "asc" ? "▲" : "▼") : "◆"}</span></button></th>`;
+    return `<div class="card"><div class="table-wrap"><table>
+      <thead><tr>${th("date", "Date")}${th("description", "Description")}${th("category", "Category", "hide-sm")}${th("frequency", "Frequency", "hide-sm")}${th("due", "Due", "hide-sm")}<th class="hide-sm">Purse</th>${th("amount", "Amount", "num")}</tr></thead>
+      <tbody>${rows.map((t) => {
+        const cl = clientById(t.clientId);
+        const meta = [cl && cl.name, t.notes].filter(Boolean).map(esc).join(" · ");
+        // on phones the hidden columns collapse into the description line
+        const small = [freqLabel(t.frequency) && isRecurring(t.frequency) ? freqLabel(t.frequency) : "", t.dueDate ? dueLabel(t.dueDate) : ""].filter(Boolean).join(" · ");
+        return `<tr data-tx="${t.id}" style="cursor:pointer">
+          <td style="white-space:nowrap">${fmtDate(t.date, { month: "short", day: "numeric" })}</td>
+          <td>${esc(t.description)}${meta ? `<br><small><i>${meta}</i></small>` : ""}${small ? `<small class="show-sm gold"><br>${esc(small)}</small>` : ""}</td>
+          <td class="hide-sm">${catTag(t)}</td>
+          <td class="hide-sm">${t.frequency ? `<span class="tag ${isRecurring(t.frequency) ? "freq" : ""}">${isRecurring(t.frequency) ? "↻ " : ""}${esc(freqLabel(t.frequency))}</span>` : ""}</td>
+          <td class="hide-sm" style="white-space:nowrap">${t.dueDate ? `<span class="${t.dueDate >= todayStr() && t.dueDate <= stepDays(todayStr(), 14) ? "gold" : ""}">${esc(dueLabel(t.dueDate))}</span>` : `<small>—</small>`}</td>
+          <td class="hide-sm"><span class="tag ${t.scope === "business" ? "biz" : ""}">${esc(t.scope)}</span></td>
+          <td class="num ${t.type === "income" ? "pos" : ""}">${t.type === "income" ? "+" : "−"}${money(t.amount)}</td>
+        </tr>`;
+      }).join("")}</tbody></table></div></div>`;
+  }
+
+  function ledgerCalendar() {
+    const m = ui.ledgerMonth;
+    const ws = Number(D().settings.weekStart) || 0;
+    const first = new Date(m.getFullYear(), m.getMonth(), 1);
+    const start = new Date(first);
+    start.setDate(1 - ((first.getDay() - ws + 7) % 7));
+    const gridEnd = new Date(start); gridEnd.setDate(start.getDate() + 41);
+    const byDate = {}, dueBy = {}, expBy = {};
+    const push = (o, k, v) => (o[k] = o[k] || []).push(v);
+    // leading/trailing days from neighbouring months show too, under the same filters
+    D().transactions.filter(passesFilters).forEach((t) => {
+      push(byDate, t.date, t);
+      if (t.dueDate && t.dueDate !== t.date) push(dueBy, t.dueDate, t);
+    });
+    expectedEntries(ymd(start), ymd(gridEnd)).filter((e) => passesFilters(e.source)).forEach((e) => push(expBy, e.date, e));
+
+    const today = todayStr();
+    let cells = "";
+    for (let i = 0; i < 42; i++) {
+      const d = new Date(start); d.setDate(start.getDate() + i);
+      if (i === 35 && d.getMonth() !== m.getMonth()) break;
+      const s = ymd(d);
+      const evs = byDate[s] || [], dues = dueBy[s] || [], exps = expBy[s] || [];
+      const net = evs.reduce((a, t) => a + signed(t), 0);
+      const chips = [
+        ...dues.map((t) => `<span class="ev due" data-tx="${t.id}" title="Due: ${esc(t.description)}">⏳ ${esc(t.description)}</span>`),
+        ...evs.map((t) => `<span class="ev ${t.type === "income" ? "inc" : "exp"}" data-tx="${t.id}" title="${esc(t.description)} ${t.type === "income" ? "+" : "−"}${esc(money(t.amount))}">${esc(t.description)}</span>`),
+        ...exps.map((e) => `<span class="ev expected" data-expected="${e.source.id}@${e.date}" title="Expected: ${esc(e.source.description)} (${esc(freqLabel(e.source.frequency))}). Select to record it.">↻ ${esc(e.source.description)}</span>`),
+      ];
+      const cls = ["day", d.getMonth() !== m.getMonth() && "other", s === today && "today", s === ui.ledgerDay && "selected"].filter(Boolean).join(" ");
+      cells += `<div class="${cls}" data-lday="${s}" role="button" tabindex="0" aria-label="${fmtDate(s, { weekday: "long", month: "long", day: "numeric" })}">
+        <span class="num"><span>${d.getDate()}</span>${evs.length ? `<span class="net ${net >= 0 ? "pos" : ""}">${net >= 0 ? "+" : "−"}${money(Math.abs(net)).replace(/\.00$/, "")}</span>` : ""}</span>
+        ${chips.slice(0, 3).join("")}
+        ${chips.length > 3 ? `<span class="more">+${chips.length - 3} more</span>` : ""}
+      </div>`;
+    }
+    const dows = Array.from({ length: 7 }, (_, i) => `<div class="dow">${DOW[(i + ws) % 7]}</div>`).join("");
+
+    const day = ui.ledgerDay;
+    const dayEvs = byDate[day] || [], dayDues = dueBy[day] || [], dayExp = expBy[day] || [];
+    const li = (t, extra = "") => `<li data-tx="${t.id}" style="cursor:pointer"><span style="width:10px;height:10px;border-radius:50%;flex:none;background:${t.type === "income" ? "var(--sage)" : esc((catById(t.categoryId) || {}).color || "#6f6774")}"></span>
+      <div class="grow"><span class="title">${esc(t.description)}</span><span class="meta">${[extra, catName(t) === "~" ? "uncategorized" : catName(t), isRecurring(t.frequency) ? freqLabel(t.frequency) : "", t.dueDate && !extra ? dueLabel(t.dueDate) : ""].filter(Boolean).map(esc).join(" · ")}</span></div>
+      <span class="${t.type === "income" ? "pos" : ""}" style="font-variant-numeric:tabular-nums">${t.type === "income" ? "+" : "−"}${money(t.amount)}</span></li>`;
+    const dayTotal = dayEvs.reduce((a, t) => a + signed(t), 0);
+
+    return `<div class="grid split">
+      <div class="card"><div class="calendar ledger-cal">${dows}${cells}</div>
+        <p class="cal-key"><span class="ev exp">spent</span><span class="ev inc">received</span><span class="ev due">⏳ due</span><span class="ev expected">↻ expected</span></p></div>
+      <div class="card" style="align-self:start">
+        <div class="card-head"><h2>${fmtDate(day, { weekday: "long", month: "long", day: "numeric" })}</h2><button class="btn sm" data-act="add-expense-day">+ Add</button></div>
+        ${dayEvs.length ? `<ul class="list">${dayEvs.map((t) => li(t)).join("")}</ul><p style="text-align:right;margin:8px 0 0;color:var(--ash)">Day total <b class="${dayTotal >= 0 ? "pos" : ""}">${dayTotal >= 0 ? "+" : "−"}${money(Math.abs(dayTotal))}</b></p>` : ""}
+        ${dayDues.length ? `<h3 class="sub-h">Due this day</h3><ul class="list">${dayDues.map((t) => li(t, `entered ${fmtDate(t.date, { month: "short", day: "numeric" })}`)).join("")}</ul>` : ""}
+        ${dayExp.length ? `<h3 class="sub-h">Expected</h3><ul class="list">${dayExp.map((e) => `<li data-expected="${e.source.id}@${e.date}" style="cursor:pointer"><span class="gold">↻</span><div class="grow"><span class="title">${esc(e.source.description)}</span><span class="meta">${esc(freqLabel(e.source.frequency))} · select to record it</span></div><span style="color:var(--ash)">${e.source.type === "income" ? "+" : "−"}${money(e.source.amount)}</span></li>`).join("")}</ul>` : ""}
+        ${!dayEvs.length && !dayDues.length && !dayExp.length ? empty("✒", "Nothing recorded this day.") : ""}
+      </div>
+    </div>`;
+  }
 
   function bindSegments(root) {
     $$("[data-ui]", root).forEach((seg) => seg.addEventListener("click", (e) => {
       const b = e.target.closest("button");
       if (!b) return;
       ui[seg.dataset.ui] = b.dataset.value;
+      if (seg.dataset.ui === "ledgerView") { prefs.ledgerView = b.dataset.value; savePrefs(); }
       render();
     }));
   }
@@ -870,8 +1103,8 @@
   }
   function toCSV(txs) {
     const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-    const head = ["date", "type", "purse", "description", "category", "client", "amount", "notes"];
-    const rows = txs.slice().sort((a, b) => a.date.localeCompare(b.date)).map((t) => [t.date, t.type, t.scope, t.description, (catById(t.categoryId) || {}).name || "", (clientById(t.clientId) || {}).name || "", t.type === "expense" ? -t.amount : t.amount, t.notes || ""].map(q).join(","));
+    const head = ["date", "type", "purse", "description", "category", "client", "amount", "frequency", "due", "notes"];
+    const rows = txs.slice().sort((a, b) => a.date.localeCompare(b.date)).map((t) => [t.date, t.type, t.scope, t.description, (catById(t.categoryId) || {}).name || "", (clientById(t.clientId) || {}).name || "", t.type === "expense" ? -t.amount : t.amount, t.frequency || "", t.dueDate || "", t.notes || ""].map(q).join(","));
     return [head.join(","), ...rows].join("\n");
   }
 
@@ -881,6 +1114,7 @@
     "add-income": () => editTransaction({ type: "income", scope: "business" }),
     "add-appt": () => editAppointment(),
     "add-appt-day": () => editAppointment({ date: ui.almanacDay }),
+    "add-expense-day": () => editTransaction({ type: "expense", date: ui.ledgerDay }),
     "add-client": () => editClient(),
     "add-category": () => editCategory(),
     import: () => openImport(),
@@ -943,6 +1177,22 @@
     const sb = $("#sidebar");
     if (sb.classList.contains("open") && !sb.contains(e.target) && !e.target.closest("#menuBtn")) sb.classList.remove("open");
   });
+
+  /* entries imported before frequency existed carry it in their notes ("Chime · Monthly"); lift it out */
+  (function migrateFrequencies() {
+    let changed = false;
+    D().transactions.forEach((t) => {
+      if (t.frequency || !t.notes) return;
+      const parts = t.notes.split(" · ");
+      const i = parts.findIndex((p) => Importer.normFrequency(p));
+      if (i < 0) return;
+      t.frequency = Importer.normFrequency(parts[i]);
+      parts.splice(i, 1);
+      t.notes = parts.join(" · ");
+      changed = true;
+    });
+    if (changed) Store.save();
+  })();
 
   Store.onChange(render);
   renderChrome();

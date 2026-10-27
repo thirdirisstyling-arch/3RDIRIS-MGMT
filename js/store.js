@@ -141,10 +141,14 @@
     remove,
     seedSample,
     onChange: (fn) => listeners.add(fn),
-    /* add many entries (and any new categories) with a single save */
-    bulkAdd(transactions, categories = []) {
+    /* add many entries (and any new categories), and patch existing ones, with a single save */
+    bulkAdd(transactions, categories = [], updates = []) {
       const now = new Date().toISOString();
       data.categories.push(...categories);
+      updates.forEach(({ id, fields }) => {
+        const t = data.transactions.find((x) => x.id === id);
+        if (t) Object.assign(t, fields);
+      });
       data.transactions.push(...transactions.map((t) => ({ categoryId: "", clientId: "", notes: "", ...t, id: uid(), createdAt: now })));
       save();
     },
