@@ -22,7 +22,16 @@ There's no build step and no dependencies. Open `index.html` in a browser, or se
 python3 -m http.server 8000   # then visit http://localhost:8000
 ```
 
-Data is saved in the browser's `localStorage`, so it stays on that device. Use **Archive → Download backup** to keep a copy or to move it to another device. The app can also be installed as a home-screen app (web manifest included).
+Data is saved in the browser's `localStorage`. Use **Archive → Download backup** to keep a copy.
+
+### Syncing between devices
+
+**Archive → Sync across devices** keeps every device in step through a secret gist on your GitHub account:
+
+1. Create a [GitHub token with only the `gist` scope](https://github.com/settings/tokens/new?scopes=gist&description=3rd%20Iris%20sync).
+2. Paste it into the sync panel with a passphrase of your choosing, then do the same on each other device.
+
+Data is encrypted in the browser (AES-GCM, key derived from the passphrase with PBKDF2) before it is uploaded, so the gist holds only ciphertext; a lost passphrase can't be recovered. Each device pulls, merges record by record (the most recent change to each record wins, and deletions sync too), then pushes. Syncing happens a few seconds after each change, when the app is opened or brought to the front, every couple of minutes while it's open, and on demand. The token and passphrase are stored only in that device's browser. The app can also be installed as a home-screen app (web manifest included).
 
 ## Deploying
 
@@ -33,5 +42,6 @@ Data is saved in the browser's `localStorage`, so it stays on that device. Use *
 - `index.html`: page shell and navigation
 - `css/styles.css`: theme tokens and layout
 - `js/store.js`: data model, persistence and sample data
+- `js/sync.js`: encrypted sync through a GitHub gist
 - `js/app.js`: views, forms and routing
 - `assets/logo-inverted.png`: the logo inverted onto a transparent background in bone ink

@@ -1249,6 +1249,68 @@
     },
   };
 
+  /* ── sync across devices ──────────────────── */
+  const TOKEN_URL = "https://github.com/settings/tokens/new?scopes=gist&description=3rd%20Iris%20sync";
+
+  function syncAgo(iso) {
+    if (!iso) return "not yet";
+    const mins = Math.round((Date.now() - new Date(iso)) / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins} min ago`;
+    const hrs = Math.round(mins / 60);
+    return hrs < 24 ? `${hrs} hr ago` : new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  }
+
+  function syncCard() {
+    const st = Sync.state;
+    if (!Sync.connected) {
+      return `<div class="card" id="syncCard">
+        <div class="card-head"><h2>Sync across devices</h2><small>off</small></div>
+        <p style="margin-top:0;color:var(--parchment)">Keep your phone, laptop and any other device in step. An encrypted copy is kept in a secret gist on your GitHub account; it's locked with a passphrase only you know, so GitHub can't read it.</p>
+        <ol class="steps">
+          <li><a href="${TOKEN_URL}" target="_blank" rel="noopener">Create a GitHub token</a> with only the <b>gist</b> box ticked (it's pre-ticked). Choose an expiry, generate it, and copy it.</li>
+          <li>Paste it below and choose a passphrase. Write the passphrase down: if it's lost, the synced copy can't be opened.</li>
+          <li>On your other devices, open this app, come here, and enter the <b>same token and passphrase</b>.</li>
+        </ol>
+        <form id="syncForm" class="form-grid" autocomplete="off">
+          <label class="field">GitHub token<input name="token" type="password" placeholder="ghp_…" autocomplete="off" spellcheck="false" required></label>
+          <label class="field">Passphrase<input name="passphrase" type="password" placeholder="at least 8 characters" autocomplete="new-password" required></label>
+          <div class="span-2"><button class="btn primary" type="submit">Connect &amp; sync</button></div>
+        </form>
+        <p class="form-error" id="syncError">${st.message ? esc(st.message) : ""}</p>
+      </div>`;
+    }
+    const label = { syncing: "Syncing…", ok: `Synced ${syncAgo(st.lastSync)}`, offline: "Offline · will sync when back online", error: "Sync problem", idle: `Last synced ${syncAgo(st.lastSync)}` }[st.status] || "";
+    return `<div class="card" id="syncCard">
+      <div class="card-head"><h2>Sync across devices</h2><small class="${st.status === "error" ? "neg" : st.status === "ok" ? "pos" : ""}">on</small></div>
+      <p style="margin-top:0" class="${st.status === "error" ? "neg" : ""}">${esc(label)}</p>
+      ${st.message ? `<p class="form-error" style="margin-top:-6px">${esc(st.message)}</p>` : ""}
+      <p style="color:var(--ash);font-size:15px">Changes sync a few seconds after you make them, and whenever you open the app. To add another device, enter the same token and passphrase there.</p>
+      <div class="toolbar" style="margin:0">
+        <button class="btn" data-act="sync-now" ${st.status === "syncing" ? "disabled" : ""}>Sync now</button>
+        <button class="btn ghost" data-act="sync-off">Turn off on this device</button>
+      </div>
+    </div>`;
+  }
+
+  function renderSyncStatus() {
+    const el = $("#syncStatus");
+    if (!el) return;
+    const st = Sync.state;
+    el.hidden = !Sync.connected;
+    if (!Sync.connected) return;
+    const [icon, text, cls] = {
+      syncing: ["↻", "syncing…", ""],
+      ok: ["☁", `synced ${syncAgo(st.lastSync)}`, "ok"],
+      offline: ["☁", "offline", "warn"],
+      error: ["!", "sync problem", "bad"],
+      idle: ["☁", `synced ${syncAgo(st.lastSync)}`, ""],
+    }[st.status] || ["☁", "sync", ""];
+    el.className = `sync-status ${cls}`;
+    el.innerHTML = `<span class="ic ${st.status === "syncing" ? "spin" : ""}">${icon}</span>${esc(text)}`;
+    el.title = st.message || "Sync across devices";
+  }
+
   views.archive = {
     title: "Archive",
     actions: () => "",
@@ -1269,7 +1331,7 @@
           </div>
           <div class="card">
             <div class="card-head"><h2>Backup &amp; restore</h2></div>
-            <p style="margin-top:0;color:var(--parchment)">Everything lives only in this browser. Keep a backup somewhere safe, and use it to move your grimoire to another device.</p>
+            <p style="margin-top:0;color:var(--parchment)">${Sync.connected ? "Your data lives in this browser and in your encrypted sync copy. A downloaded backup is still a good safety net." : "Everything lives only in this browser. Keep a backup somewhere safe, or turn on sync below to use it on other devices."}</p>
             <div class="toolbar">
               <button class="btn" data-act="export">Download backup</button>
               <label class="btn ghost" style="display:inline-block">Restore from backup<input type="file" accept="application/json,.json" id="importFile" hidden></label>
@@ -1278,6 +1340,7 @@
             </div>
             <p style="color:var(--ash);font-size:15px;margin:0"><i>${D().transactions.length} ledger entries · ${D().appointments.length} appointments · ${D().clients.length} clients · ${D().tasks.length} tasks · ${D().categories.length} categories</i></p>
           </div>
+          ${syncCard()}
           <div class="card">
             <div class="card-head"><h2>Rituals</h2></div>
             <div class="toolbar" style="margin:0">
@@ -1288,11 +1351,27 @@
         </div>`;
     },
     bind(root) {
+      const sf = $("#syncForm", root);
+      if (sf) sf.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const f = new FormData(sf);
+        const btn = $("button[type=submit]", sf);
+        btn.disabled = true;
+        btn.textContent = "Connecting…";
+        try {
+          const { created } = await Sync.connect(String(f.get("token")), String(f.get("passphrase")));
+          toast(created ? "Sync is on. Now connect your other devices." : "Connected. Your data is merged and in sync.");
+        } catch (err) {
+          btn.disabled = false;
+          btn.textContent = "Connect & sync";
+          const box = $("#syncError");
+          if (box) box.textContent = err.message;
+        }
+      });
       $("#settingsForm", root).addEventListener("submit", (e) => {
         e.preventDefault();
         const f = new FormData(e.target);
-        Object.assign(D().settings, { ownerName: f.get("ownerName").trim(), currency: f.get("currency"), weekStart: +f.get("weekStart") });
-        Store.save();
+        Store.setSettings({ ownerName: f.get("ownerName").trim(), currency: f.get("currency"), weekStart: +f.get("weekStart") });
         toast("Settings saved.");
       });
       $("#importFile", root).addEventListener("change", async (e) => {
@@ -1335,23 +1414,25 @@
     "add-category": () => editCategory(),
     "add-task": () => editTask({ scope: ui.agendaScope === "business" ? "business" : "personal" }),
     "clear-done": () => {
-      const n = D().tasks.filter((t) => t.done).length;
+      const n = Store.removeWhere("tasks", (t) => t.done);
       if (!n) return;
-      D().tasks = D().tasks.filter((t) => !t.done);
-      Store.save();
       toast(`${n} finished task${n === 1 ? "" : "s"} cleared.`);
     },
     import: () => openImport(),
     seed: () => { Store.seedSample(); toast("Sample pages summoned."); },
+    "sync-now": () => Sync.syncNow(),
+    "sync-off": () => { Sync.disconnect(); toast("Sync is off on this device. Your data stays here."); render(); },
     export: () => download(`3rd-iris-backup-${todayStr()}.json`, Store.exportJSON(), "application/json"),
     csv: () => download(`3rd-iris-ledger-${monthKey(ui.ledgerMonth)}.csv`, toCSV(D().transactions.filter((t) => inMonth(t.date, monthKey(ui.ledgerMonth)))), "text/csv"),
     "csv-all": () => download(`3rd-iris-ledger-all.csv`, toCSV(D().transactions), "text/csv"),
     reset: () => openForm({
       title: "Burn the Grimoire?",
-      fields: [{ name: "confirm", label: 'Type "burn" to erase every record in this browser', span2: true }],
+      fields: [{ name: "confirm", label: Sync.connected ? 'Type "burn" to erase every record in this browser. Sync will be turned off here; your synced copy and other devices are untouched.' : 'Type "burn" to erase every record in this browser', span2: true }],
       submitLabel: "Burn it",
       onSubmit: (v) => {
         if (v.confirm.toLowerCase() !== "burn") return 'Type "burn" to confirm.';
+        // otherwise the next sync would simply bring everything back
+        if (Sync.connected) Sync.disconnect();
         Store.reset();
         toast("Ashes. A fresh page awaits.");
       },
@@ -1428,6 +1509,14 @@
   })();
 
   Store.onChange(render);
+  Sync.onChange(() => {
+    renderSyncStatus();
+    // refresh the Archive page, unless someone is mid-way through typing in it
+    const typing = document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+    if (currentView() === "archive" && !typing && !$("#modal").open) render();
+  });
+  setInterval(renderSyncStatus, 60000);
+  renderSyncStatus();
   renderChrome();
   render();
 })();

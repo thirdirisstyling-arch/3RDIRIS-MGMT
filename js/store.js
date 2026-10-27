@@ -14,16 +14,22 @@
   ];
 
   const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  const now = () => new Date().toISOString();
+  const COLLECTIONS = ["categories", "transactions", "appointments", "clients", "tasks"];
+  // a record's last change; older data without timestamps counts as oldest
+  const stamp = (r) => r.updatedAt || r.createdAt || "";
 
   function blank() {
     return {
       version: 1,
       settings: { currency: "USD", ownerName: "", weekStart: 0 },
-      categories: DEFAULT_CATEGORIES.map((c) => ({ id: uid(), ...c })),
+      // fixed ids so every device starts with the same default categories
+      categories: DEFAULT_CATEGORIES.map((c, i) => ({ id: `default-${i}`, ...c })),
       transactions: [],
       appointments: [],
       clients: [],
       tasks: [],
+      deleted: [], // tombstones { c: collection, id, at } so deletions sync too
     };
   }
 
@@ -49,6 +55,7 @@
       appointments: Array.isArray(d.appointments) ? d.appointments : [],
       clients: Array.isArray(d.clients) ? d.clients : [],
       tasks: Array.isArray(d.tasks) ? d.tasks : [],
+      deleted: Array.isArray(d.deleted) ? d.deleted : [],
     };
   }
 
@@ -67,27 +74,98 @@
   /* generic collection helpers */
   function upsert(collection, record) {
     const list = data[collection];
+    const at = now();
     if (record.id) {
       const i = list.findIndex((r) => r.id === record.id);
-      if (i >= 0) list[i] = { ...list[i], ...record };
-      else list.push(record);
+      if (i >= 0) list[i] = { ...list[i], ...record, updatedAt: at };
+      else list.push({ ...record, updatedAt: at });
     } else {
-      list.push({ ...record, id: uid(), createdAt: new Date().toISOString() });
+      list.push({ ...record, id: uid(), createdAt: at, updatedAt: at });
     }
     save();
   }
 
+  /* drop records (remembering them so other devices drop them too) and clear references to them */
+  function dropRecords(collection, ids) {
+    const gone = new Set(ids);
+    if (!gone.size) return;
+    const at = now();
+    data[collection] = data[collection].filter((r) => !gone.has(r.id));
+    gone.forEach((id) => data.deleted.push({ c: collection, id, at }));
+    const unlink = (list, field) => list.forEach((r) => { if (gone.has(r[field])) { r[field] = ""; r.updatedAt = at; } });
+    if (collection === "clients") ["appointments", "tasks", "transactions"].forEach((c) => unlink(data[c], "clientId"));
+    if (collection === "categories") unlink(data.transactions, "categoryId");
+  }
+
   function remove(collection, id) {
-    data[collection] = data[collection].filter((r) => r.id !== id);
-    if (collection === "clients") {
-      data.appointments.forEach((a) => { if (a.clientId === id) a.clientId = ""; });
-      data.tasks.forEach((t) => { if (t.clientId === id) t.clientId = ""; });
-      data.transactions.forEach((t) => { if (t.clientId === id) t.clientId = ""; });
-    }
-    if (collection === "categories") {
-      data.transactions.forEach((t) => { if (t.categoryId === id) t.categoryId = ""; });
-    }
+    dropRecords(collection, [id]);
     save();
+  }
+
+  function removeWhere(collection, pred) {
+    const ids = data[collection].filter(pred).map((r) => r.id);
+    dropRecords(collection, ids);
+    save();
+    return ids.length;
+  }
+
+  function setSettings(patch) {
+    Object.assign(data.settings, patch, { updatedAt: now() });
+    save();
+  }
+
+  /* fold another copy of the data (e.g. from another device) into this one.
+     Per record, the most recently changed version wins; deletions win over older edits. */
+  function mergeFrom(remoteRaw) {
+    const remote = normalize(remoteRaw);
+    const before = JSON.stringify(data);
+
+    const tombs = new Map();
+    [...data.deleted, ...remote.deleted].forEach((t) => {
+      const k = `${t.c}|${t.id}`;
+      if (!tombs.has(k) || t.at > tombs.get(k).at) tombs.set(k, t);
+    });
+
+    COLLECTIONS.forEach((c) => {
+      const byId = new Map(data[c].map((r) => [r.id, r]));
+      remote[c].forEach((r) => {
+        const mine = byId.get(r.id);
+        if (!mine || stamp(r) > stamp(mine)) byId.set(r.id, r);
+      });
+      data[c] = [...byId.values()].filter((r) => {
+        const t = tombs.get(`${c}|${r.id}`);
+        return !t || stamp(r) > t.at;
+      });
+    });
+
+    if ((remote.settings.updatedAt || "") > (data.settings.updatedAt || "")) data.settings = remote.settings;
+
+    // keep deletions for six months; long enough for any device to catch up
+    const cutoff = new Date(Date.now() - 183 * 864e5).toISOString();
+    data.deleted = [...tombs.values()].filter((t) => t.at > cutoff);
+
+    dedupeCategories();
+    const changed = JSON.stringify(data) !== before;
+    if (changed) save();
+    return changed;
+  }
+
+  /* devices that started separately each made their own default categories; fold same-named ones together */
+  function dedupeCategories() {
+    const groups = {};
+    data.categories.forEach((c) => (groups[`${c.scope}|${c.name.trim().toLowerCase()}`] ||= []).push(c));
+    Object.values(groups).filter((g) => g.length > 1).forEach((g) => {
+      // the same choice on every device: the smallest id survives, with the latest edits
+      g.sort((a, b) => a.id.localeCompare(b.id));
+      const keep = g[0];
+      const newest = g.reduce((a, b) => (stamp(b) > stamp(a) ? b : a));
+      Object.assign(keep, { ...newest, id: keep.id });
+      const drop = new Set(g.slice(1).map((c) => c.id));
+      const at = now();
+      data.transactions.forEach((t) => { if (drop.has(t.categoryId)) { t.categoryId = keep.id; t.updatedAt = at; } });
+      data.categories = data.categories.filter((c) => !drop.has(c.id));
+      drop.forEach((id) => data.deleted.push({ c: "categories", id, at }));
+    });
   }
 
   /* sample data, relative to today so it always looks current */
@@ -106,7 +184,7 @@
       { name: "Elias Thorne", email: "elias@thornebooks.com", phone: "555-0147", status: "active", rate: 120, notes: "Brand shoot for his antiquarian bookshop. Loves candlelit sets." },
       { name: "Wren Ashcombe", email: "wren.ash@mail.com", phone: "555-0178", status: "lead", rate: 0, notes: "Asked about bridal styling for a Samhain wedding." },
       { name: "Ondine Blackwood", email: "ondine@blackwood.studio", phone: "", status: "past", rate: 95, notes: "Editorial work last spring. Send a holiday card." },
-    ].map((c) => ({ ...c, id: uid(), createdAt: new Date().toISOString() }));
+    ].map((c) => ({ ...c, id: uid(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
     data.clients.push(...clients);
     const [morgana, elias, wren] = clients;
 
@@ -122,7 +200,7 @@
       { type: "expense", amount: 212.5, date: iso(-11), description: "Color stock & foils", scope: "business", categoryId: cat("Studio Supplies") },
       { type: "expense", amount: 29.99, date: iso(-15), description: "Booking software", scope: "business", categoryId: cat("Software & Tools") },
       { type: "expense", amount: 55, date: iso(-1), description: "Printed cards, wax seals", scope: "business", categoryId: cat("Marketing") },
-    ].map((t) => ({ categoryId: "", clientId: "", ...t, id: uid(), createdAt: new Date().toISOString() }));
+    ].map((t) => ({ categoryId: "", clientId: "", ...t, id: uid(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
     data.transactions.push(...tx);
 
     const appts = [
@@ -131,7 +209,7 @@
       { title: "Shoot: the reading room", date: iso(6), start: "18:30", end: "21:00", clientId: elias.id, location: "Thorne Books", notes: "Golden hour into candlelight." },
       { title: "Supply run", date: iso(2), start: "10:00", end: "11:00", clientId: "", location: "", notes: "" },
       { title: "Tea with the coven", date: iso(-1), start: "19:00", end: "21:00", clientId: "", location: "Home", notes: "" },
-    ].map((a) => ({ ...a, id: uid(), createdAt: new Date().toISOString() }));
+    ].map((a) => ({ ...a, id: uid(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
     data.appointments.push(...appts);
 
     const tasks = [
@@ -142,7 +220,7 @@
       { title: "Update portfolio with autumn work", due: "", priority: "normal", scope: "business", clientId: "" },
       { title: "Repot the moonflower", due: "", priority: "low", scope: "personal", clientId: "" },
       { title: "Invoice Morgana for the styling session", due: iso(-2), priority: "normal", scope: "business", clientId: morgana.id, done: true, doneAt: new Date().toISOString() },
-    ].map((t) => ({ notes: "", done: false, doneAt: "", ...t, id: uid(), createdAt: new Date().toISOString() }));
+    ].map((t) => ({ notes: "", done: false, doneAt: "", ...t, id: uid(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
     data.tasks.push(...tasks);
     save();
   }
@@ -153,17 +231,20 @@
     save,
     upsert,
     remove,
+    removeWhere,
+    setSettings,
+    mergeFrom,
     seedSample,
     onChange: (fn) => listeners.add(fn),
     /* add many entries (and any new categories), and patch existing ones, with a single save */
     bulkAdd(transactions, categories = [], updates = []) {
-      const now = new Date().toISOString();
-      data.categories.push(...categories);
+      const at = now();
+      data.categories.push(...categories.map((c) => ({ ...c, createdAt: at, updatedAt: at })));
       updates.forEach(({ id, fields }) => {
         const t = data.transactions.find((x) => x.id === id);
-        if (t) Object.assign(t, fields);
+        if (t) Object.assign(t, fields, { updatedAt: at });
       });
-      data.transactions.push(...transactions.map((t) => ({ categoryId: "", clientId: "", notes: "", ...t, id: uid(), createdAt: now })));
+      data.transactions.push(...transactions.map((t) => ({ categoryId: "", clientId: "", notes: "", ...t, id: uid(), createdAt: at, updatedAt: at })));
       save();
     },
     exportJSON: () => JSON.stringify(data, null, 2),

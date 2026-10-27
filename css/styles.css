@@ -485,3 +485,22 @@ tr.projected .tag { opacity: .75; }
 .more-link { margin: 8px 0 0; text-align: right; font-style: italic; font-size: 15px; color: var(--ash); }
 h2.neg { color: var(--rose); }
 h2.gold { color: var(--gold); }
+
+/* ── sync ─────────────────────────────────── */
+.sync-status {
+  display: flex; align-items: center; gap: 8px; justify-content: center;
+  font-family: var(--font-sc); font-size: 14px; letter-spacing: .05em; color: var(--ash); text-decoration: none;
+  padding: 6px 10px; border: 1px solid var(--line-soft); border-radius: var(--radius);
+}
+.sync-status[hidden] { display: none; }
+.sync-status:hover { color: var(--gold); border-color: var(--gold-dim); }
+.sync-status .ic { color: var(--gold-dim); }
+.sync-status.ok .ic { color: var(--sage); }
+.sync-status.warn .ic { color: var(--gold); }
+.sync-status.bad { color: var(--rose); border-color: #6d3e44; }
+.sync-status.bad .ic { color: var(--rose); }
+.spin { display: inline-block; animation: spin 1.2s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.steps { margin: 0 0 14px; padding-left: 22px; color: var(--parchment); font-size: 16px; }
+.steps li { margin-bottom: 6px; }
+.btn[disabled] { opacity: .5; cursor: default; }
