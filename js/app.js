@@ -132,6 +132,7 @@
    * onSubmit may return an error message to keep the dialog open.
    */
   function openForm({ title, fields, values = {}, submitLabel = "Inscribe", onSubmit, onDelete, onChange }) {
+    modal.classList.remove("wide");
     $("#modalTitle").textContent = title;
     $("#modalBody").innerHTML = `<div class="form-grid">${fields.map((f) => fieldHTML(f, values[f.name])).join("")}</div><p class="form-error" id="formError"></p>`;
     $("#modalFoot").innerHTML =
@@ -292,6 +293,152 @@
     });
   }
 
+  /* ── bulk import ───────────────────────────── */
+  const NEW_CAT_COLORS = ["#b48a5a", "#7f98a8", "#a07fa8", "#93a98c", "#c07a80", "#6f8f9a", "#c3a568", "#8b6a95"];
+  let importDraft = { text: "", scope: "personal" };
+
+  function openImport() {
+    modal.classList.add("wide");
+    $("#modalTitle").textContent = "Bulk Import";
+    $("#modalBody").oninput = null;
+    importStep1();
+    modal.showModal();
+    $(".import-text", modal).focus();
+  }
+
+  function importStep1() {
+    $("#modalBody").innerHTML = `
+      <p class="import-help">Paste rows copied from a spreadsheet, or choose a CSV file. Each row needs a <b>date</b>, a <b>description</b> and an <b>amount</b>.
+        A column saying <code>Income</code> or <code>Expense</code> sets the kind, and the column after it is read as the category.
+        Anything else (account, frequency, status) is kept in the notes. A header row such as <code>date,description,amount,category</code> also works.</p>
+      <textarea class="import-text" spellcheck="false" placeholder="2026-10-07&#9;Canva Pro&#9;Expense&#9;Subscriptions&#9;$15.00">${esc(importDraft.text)}</textarea>
+      <div class="toolbar" style="margin:12px 0 0">
+        <label class="btn ghost sm" style="display:inline-block">Choose file…<input type="file" accept=".csv,.tsv,.txt,text/csv,text/plain" id="importCsv" hidden></label>
+        <span class="spacer"></span>
+        <span style="color:var(--ash);font-family:var(--font-sc);font-size:15px">Purse</span>
+        <div class="segmented" id="importScope">${["personal", "business"].map((v) => `<button type="button" data-value="${v}" class="${importDraft.scope === v ? "on" : ""}">${v[0].toUpperCase() + v.slice(1)}</button>`).join("")}</div>
+      </div>
+      <p class="form-error" id="formError"></p>`;
+    $("#modalFoot").innerHTML = `<span class="spacer"></span><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary">Preview</button>`;
+    const ta = $(".import-text", modal);
+    ta.addEventListener("input", () => (importDraft.text = ta.value));
+    $("#importCsv", modal).addEventListener("change", async (e) => {
+      const f = e.target.files[0];
+      if (f) { ta.value = importDraft.text = await f.text(); }
+    });
+    $("#importScope", modal).addEventListener("click", (e) => {
+      const b = e.target.closest("button");
+      if (!b) return;
+      importDraft.scope = b.dataset.value;
+      $$("#importScope button", modal).forEach((x) => x.classList.toggle("on", x === b));
+    });
+    modalSubmit = () => {
+      const rows = Importer.parse(importDraft.text);
+      if (!rows.length) { $("#formError").textContent = "Paste some rows first."; return false; }
+      importStep2(rows);
+      return false;
+    };
+  }
+
+  function importStep2(rows) {
+    const catByName = (n) => D().categories.find((c) => c.name.toLowerCase() === n.toLowerCase());
+    const clientByName = (n) => D().clients.find((c) => c.name.toLowerCase() === n.toLowerCase());
+    const key = (t) => [t.date, t.type, Math.round(t.amount * 100), (t.description || "").trim().toLowerCase()].join("|");
+    const existing = new Set(D().transactions.map(key));
+
+    rows.forEach((r) => {
+      r.scope = r.scope || importDraft.scope;
+      r.duplicate = r.ok && existing.has(key(r));
+      r.include = r.ok && !r.duplicate;
+      // income has no budget category; keep any label it carried as a note
+      r.newCat = r.type === "expense" && r.category && !catByName(r.category);
+    });
+    const newCats = [...new Set(rows.filter((r) => r.newCat).map((r) => r.category.trim()))];
+
+    const render = () => {
+      const chosen = rows.filter((r) => r.include);
+      const inc = chosen.filter((r) => r.type === "income").reduce((s, r) => s + r.amount, 0);
+      const exp = chosen.filter((r) => r.type === "expense").reduce((s, r) => s + r.amount, 0);
+      const dupes = rows.filter((r) => r.duplicate).length, bad = rows.filter((r) => !r.ok).length;
+      $(".import-summary", modal).innerHTML = `
+        <span><b>${chosen.length}</b> of ${rows.length} rows selected</span>
+        <span class="pos">+${money(inc)} income</span><span>−${money(exp)} expenses</span>
+        ${dupes ? `<span class="neg">${dupes} already in the ledger</span>` : ""}
+        ${bad ? `<span class="neg">${bad} unreadable</span>` : ""}
+        ${newCats.length ? `<span>New categories: ${newCats.map((n) => `<span class="tag new">${esc(n)}</span>`).join(" ")}</span>` : ""}`;
+      $("[data-import-go]", modal).textContent = `Import ${chosen.length}`;
+      $("[data-import-go]", modal).disabled = !chosen.length;
+    };
+
+    $("#modalBody").innerHTML = `
+      <div class="import-summary"></div>
+      <div class="import-preview"><table>
+        <thead><tr><th><input type="checkbox" id="importAll" aria-label="Select all" style="width:auto"></th><th>Date</th><th>Description</th><th>Category</th><th class="num">Amount</th><th class="hide-sm">Notes</th></tr></thead>
+        <tbody>${rows.map((r, i) => `<tr class="${r.include ? "" : "skip"}">
+          <td><input type="checkbox" data-row="${i}" ${r.include ? "checked" : ""} ${r.ok ? "" : "disabled"} style="width:auto" aria-label="Include row ${i + 1}"></td>
+          <td style="white-space:nowrap">${r.date ? fmtDate(r.date, { month: "short", day: "numeric", year: "numeric" }) : "—"}</td>
+          <td>${esc(r.description || r.raw.join(" "))}${!r.ok ? ` <span class="tag err">${esc(r.error)}</span>` : r.duplicate ? ` <span class="tag dupe">already imported</span>` : ""}</td>
+          <td>${r.type === "income" ? `<span class="tag"><span class="dot" style="background:var(--sage)"></span>income</span>` : r.category ? `<span class="tag ${r.newCat ? "new" : ""}">${esc(r.category)}${r.newCat ? " · new" : ""}</span>` : `<small><i>uncategorized</i></small>`}</td>
+          <td class="num ${r.type === "income" ? "pos" : ""}">${r.ok ? (r.type === "income" ? "+" : "−") + money(r.amount) : ""}</td>
+          <td class="note hide-sm">${esc([r.type === "income" && r.category && !/^income$/i.test(r.category) ? r.category : "", r.notes].filter(Boolean).join(" · "))}</td>
+        </tr>`).join("")}</tbody></table></div>
+      <p class="form-error" id="formError"></p>`;
+    $("#modalFoot").innerHTML = `<button type="button" class="btn ghost" data-import-back>← Back</button><span class="spacer"></span><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary" data-import-go>Import</button>`;
+
+    const all = $("#importAll", modal);
+    const syncAll = () => { const ok = rows.filter((r) => r.ok); all.checked = ok.length > 0 && ok.every((r) => r.include); };
+    $(".import-preview tbody", modal).addEventListener("change", (e) => {
+      const i = e.target.dataset.row;
+      if (i === undefined) return;
+      rows[i].include = e.target.checked;
+      e.target.closest("tr").classList.toggle("skip", !e.target.checked);
+      syncAll(); render();
+    });
+    all.addEventListener("change", () => {
+      rows.forEach((r, i) => {
+        if (!r.ok) return;
+        r.include = all.checked;
+        const cb = $(`[data-row="${i}"]`, modal);
+        cb.checked = all.checked;
+        cb.closest("tr").classList.toggle("skip", !all.checked);
+      });
+      render();
+    });
+    $("[data-import-back]", modal).addEventListener("click", importStep1);
+    syncAll(); render();
+
+    modalSubmit = () => {
+      const chosen = rows.filter((r) => r.include);
+      if (!chosen.length) return false;
+      const created = {};
+      const cats = [];
+      chosen.filter((r) => r.newCat).forEach((r) => {
+        const name = r.category.trim();
+        if (created[name.toLowerCase()]) return;
+        const cat = { id: Store.uid(), name, color: NEW_CAT_COLORS[(D().categories.length + cats.length) % NEW_CAT_COLORS.length], budget: 0, scope: r.scope };
+        created[name.toLowerCase()] = cat;
+        cats.push(cat);
+      });
+      const txs = chosen.map((r) => {
+        const cat = r.type === "expense" && r.category ? catByName(r.category) || created[r.category.trim().toLowerCase()] : null;
+        const client = r.client ? clientByName(r.client) : null;
+        const notes = [
+          r.type === "income" && r.category && !/^income$/i.test(r.category) ? r.category : "",
+          r.client && !client ? r.client : "",
+          r.notes,
+        ].filter(Boolean).join(" · ");
+        return { type: r.type, amount: r.amount, date: r.date, description: r.description.trim(), scope: r.scope, categoryId: cat ? cat.id : "", clientId: client ? client.id : "", notes };
+      });
+      const latest = txs.map((t) => t.date).sort().pop();
+      ui.ledgerMonth = new Date(+latest.slice(0, 4), +latest.slice(5, 7) - 1, 1);
+      importDraft = { text: "", scope: importDraft.scope };
+      Store.bulkAdd(txs, cats);
+      if (location.hash !== "#ledger") location.hash = "ledger";
+      toast(`${txs.length} entries inscribed${cats.length ? `, ${cats.length} new categor${cats.length === 1 ? "y" : "ies"}` : ""}.`);
+      return true;
+    };
+  }
+
   /* ── shared computations ───────────────────── */
   function monthTotals(key) {
     const txs = D().transactions.filter((t) => inMonth(t.date, key));
@@ -424,7 +571,7 @@
 
   views.ledger = {
     title: "Ledger",
-    actions: () => `<button class="btn" data-act="add-income">+ Income</button><button class="btn primary" data-act="add-expense">+ Expense</button>`,
+    actions: () => `<button class="btn ghost" data-act="import">Import</button><button class="btn" data-act="add-income">+ Income</button><button class="btn primary" data-act="add-expense">+ Expense</button>`,
     render() {
       const key = monthKey(ui.ledgerMonth);
       const q = ui.ledgerSearch.toLowerCase();
@@ -508,7 +655,7 @@
           ${list.length ? list.map((c) => {
             const spent = t.spentBy[c.id] || 0, b = Number(c.budget) || 0;
             const pct = b ? Math.min(100, (spent / b) * 100) : spent ? 100 : 0;
-            const state = b && spent > b ? "over" : b && spent > b * 0.8 ? "warn" : "";
+            const state = !b ? (spent ? "none" : "") : spent > b ? "over" : spent > b * 0.8 ? "warn" : "";
             const note = !b ? "no limit set" : spent > b ? `<span class="neg">${money(spent - b)} over</span>` : `${money(b - spent)} left`;
             return `<div class="budget-row" data-cat="${c.id}" style="cursor:pointer">
               <div class="top"><span class="name"><span class="swatch" style="background:${esc(c.color)}"></span>${esc(c.name)}</span><span class="amt">${money(spent)} / ${b ? money(b) : "—"}</span></div>
@@ -678,6 +825,7 @@
               <button class="btn" data-act="export">Download backup</button>
               <label class="btn ghost" style="display:inline-block">Restore from backup<input type="file" accept="application/json,.json" id="importFile" hidden></label>
               <button class="btn ghost" data-act="csv-all">All entries as CSV</button>
+              <button class="btn ghost" data-act="import">Import entries</button>
             </div>
             <p style="color:var(--ash);font-size:15px;margin:0"><i>${D().transactions.length} ledger entries · ${D().appointments.length} appointments · ${D().clients.length} clients · ${D().categories.length} categories</i></p>
           </div>
@@ -735,6 +883,7 @@
     "add-appt-day": () => editAppointment({ date: ui.almanacDay }),
     "add-client": () => editClient(),
     "add-category": () => editCategory(),
+    import: () => openImport(),
     seed: () => { Store.seedSample(); toast("Sample pages summoned."); },
     export: () => download(`3rd-iris-backup-${todayStr()}.json`, Store.exportJSON(), "application/json"),
     csv: () => download(`3rd-iris-ledger-${monthKey(ui.ledgerMonth)}.csv`, toCSV(D().transactions.filter((t) => inMonth(t.date, monthKey(ui.ledgerMonth)))), "text/csv"),

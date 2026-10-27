@@ -141,6 +141,13 @@
     remove,
     seedSample,
     onChange: (fn) => listeners.add(fn),
+    /* add many entries (and any new categories) with a single save */
+    bulkAdd(transactions, categories = []) {
+      const now = new Date().toISOString();
+      data.categories.push(...categories);
+      data.transactions.push(...transactions.map((t) => ({ categoryId: "", clientId: "", notes: "", ...t, id: uid(), createdAt: now })));
+      save();
+    },
     exportJSON: () => JSON.stringify(data, null, 2),
     importJSON(text) {
       const parsed = JSON.parse(text);
