@@ -23,6 +23,10 @@ python3 -m http.server 8000   # then visit http://localhost:8000
 
 Data is saved in the browser's `localStorage`, so it stays on that device. Use **Archive → Download backup** to keep a copy or to move it to another device. The app can also be installed as a home-screen app (web manifest included).
 
+## Deploying
+
+`.github/workflows/pages.yml` publishes the repo root to GitHub Pages on every push to the default branch (or `main`), and can also be run by hand from the Actions tab. One-time setup: **Settings → Pages → Build and deployment → Source: GitHub Actions**. The site then lives at `https://thirdirisstyling-arch.github.io/3RDIRIS-MGMT/`.
+
 ## Files
 
 - `index.html`: page shell and navigation
