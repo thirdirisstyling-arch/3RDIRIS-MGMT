@@ -1,0 +1,9 @@
+{
+  "name": "3rd Iris Grimoire",
+  "short_name": "3rd Iris",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#0e0c10",
+  "theme_color": "#0e0c10",
+  "icons": [{ "src": "assets/icon-256.png", "sizes": "256x256", "type": "image/png" }]
+}
