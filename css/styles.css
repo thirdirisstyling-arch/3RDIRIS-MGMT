@@ -504,3 +504,5 @@ h2.gold { color: var(--gold); }
 .steps { margin: 0 0 14px; padding-left: 22px; color: var(--parchment); font-size: 16px; }
 .steps li { margin-bottom: 6px; }
 .btn[disabled] { opacity: .5; cursor: default; }
+.sync-summary { margin: 0 0 10px; color: var(--parchment); font-size: 16px; }
+.sync-summary b { color: var(--gold); font-weight: 500; }

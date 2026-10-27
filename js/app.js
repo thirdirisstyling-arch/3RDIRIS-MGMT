@@ -1285,6 +1285,7 @@
       <div class="card-head"><h2>Sync across devices</h2><small class="${st.status === "error" ? "neg" : st.status === "ok" ? "pos" : ""}">on</small></div>
       <p style="margin-top:0" class="${st.status === "error" ? "neg" : ""}">${esc(label)}</p>
       ${st.message ? `<p class="form-error" style="margin-top:-6px">${esc(st.message)}</p>` : ""}
+      ${st.summary ? `<p class="sync-summary">The synced copy holds <b>${st.summary.tx}</b> ledger entries · <b>${st.summary.tasks}</b> tasks · <b>${st.summary.clients}</b> clients · <b>${st.summary.appts}</b> appointments.</p>` : ""}
       <p style="color:var(--ash);font-size:15px">Changes sync a few seconds after you make them, and whenever you open the app. To add another device, enter the same token and passphrase there.</p>
       <div class="toolbar" style="margin:0">
         <button class="btn" data-act="sync-now" ${st.status === "syncing" ? "disabled" : ""}>Sync now</button>

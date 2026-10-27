@@ -79,15 +79,18 @@
     return res.status === 204 ? null : res.json();
   }
 
-  async function findGist(token) {
+  /* every sync copy on the account, oldest first. Normally one; two devices that connected
+     before either could see the other's copy each made their own, and those get folded together. */
+  async function findGists(token) {
+    const out = [];
     for (let page = 1; page <= 10; page++) {
       const list = await api(`/gists?per_page=100&page=${page}`, { token });
-      const hit = list.find((g) => g.description === GIST_DESC && g.files && g.files[FILE]);
-      if (hit) return hit.id;
-      if (list.length < 100) return null;
+      out.push(...list.filter((g) => g.description === GIST_DESC && g.files && g.files[FILE]));
+      if (list.length < 100) break;
     }
-    return null;
+    return out.sort((a, b) => (a.created_at || "").localeCompare(b.created_at || "") || a.id.localeCompare(b.id));
   }
+  const findGist = async (token) => ((await findGists(token))[0] || {}).id || null;
 
   async function readGist(id, token) {
     const g = await api(`/gists/${id}`, { token });
@@ -104,25 +107,81 @@
   const writeGist = (id, payload) => api(`/gists/${id}`, { method: "PATCH", body: { files: { [FILE]: { content: JSON.stringify(payload) } } } });
 
   /* ── sync cycle ─────────────────────────── */
-  let running = null, again = false, applyingRemote = false;
+  let running = null, again = false, applyingRemote = false, lastScan = 0;
+  const SCAN_EVERY = 10 * 60000;
 
-  async function syncNow() {
+  const mergeIn = (remote) => {
+    applyingRemote = true;
+    try { Store.mergeFrom(remote); } finally { applyingRemote = false; }
+  };
+
+  /* settle on the oldest sync copy, folding any others into this device's data */
+  async function consolidate() {
+    lastScan = Date.now();
+    const all = await findGists(cfg.token);
+    // GitHub's list can lag behind a copy made moments ago; ask for this device's copy directly
+    if (cfg.gistId && !all.some((g) => g.id === cfg.gistId)) {
+      const own = await api(`/gists/${cfg.gistId}`).catch((e) => { if (e.kind === "missing") return null; throw e; });
+      if (own) {
+        all.push(own);
+        all.sort((a, b) => (a.created_at || "").localeCompare(b.created_at || "") || a.id.localeCompare(b.id));
+      }
+    }
+    if (!all.length) {
+      // the copy was deleted on GitHub; start a new one from what this device holds
+      const g = await api("/gists", { method: "POST", body: { description: GIST_DESC, public: false, files: { [FILE]: { content: JSON.stringify(await encrypt(Store.data, cfg.passphrase)) } } } });
+      cfg.gistId = g.id;
+      saveCfg(cfg);
+      return { extras: [], locked: 0 };
+    }
+    const extras = [];
+    let locked = 0;
+    for (const g of all.slice(1)) {
+      try {
+        mergeIn(await decrypt(await readGist(g.id, cfg.token), cfg.passphrase));
+        extras.push(g.id);
+      } catch (e) {
+        // a copy made with a different passphrase can't be read; leave it alone
+        if (e.kind === "passphrase") locked++;
+        else throw e;
+      }
+    }
+    if (cfg.gistId !== all[0].id) { cfg.gistId = all[0].id; saveCfg(cfg); }
+    return { extras, locked };
+  }
+
+  const summarize = (d) => ({ tx: d.transactions.length, tasks: d.tasks.length, clients: d.clients.length, appts: d.appointments.length });
+
+  async function syncNow({ rescan = false } = {}) {
     if (!cfg) return;
     if (running) { again = true; return running; }
     running = (async () => {
       setState({ status: "syncing", message: "" });
       try {
-        const remotePayload = await readGist(cfg.gistId, cfg.token);
+        let scan = rescan || Date.now() - lastScan > SCAN_EVERY ? await consolidate() : null;
+        let remotePayload;
+        try {
+          remotePayload = await readGist(cfg.gistId, cfg.token);
+        } catch (e) {
+          // another device may have folded this copy into the main one; find it
+          if (e.kind !== "missing" || scan) throw e;
+          scan = await consolidate();
+          remotePayload = await readGist(cfg.gistId, cfg.token);
+        }
         const remote = await decrypt(remotePayload, cfg.passphrase);
-        applyingRemote = true;
-        try { Store.mergeFrom(remote); } finally { applyingRemote = false; }
+        mergeIn(remote);
         // only write back when this device has something the gist lacks
         if (canonical(Store.data) !== canonical(remote)) {
           await writeGist(cfg.gistId, await encrypt(Store.data, cfg.passphrase, remotePayload.salt));
         }
+        // extra copies are only removed once their contents are safely in the main one
+        if (scan) for (const id of scan.extras) await api(`/gists/${id}`, { method: "DELETE" }).catch(() => {});
         cfg.lastSync = new Date().toISOString();
         saveCfg(cfg);
-        setState({ status: "ok", message: "", lastSync: cfg.lastSync });
+        setState({
+          status: "ok", lastSync: cfg.lastSync, summary: summarize(Store.data),
+          message: scan && scan.locked ? "Another sync copy on your GitHub account uses a different passphrase, so it was left alone." : "",
+        });
       } catch (e) {
         setState({ status: e.kind === "offline" ? "offline" : "error", message: e.message || String(e) });
       } finally {
@@ -162,7 +221,7 @@
       }
       cfg = { token, passphrase, gistId, lastSync: "" };
       saveCfg(cfg);
-      await syncNow();
+      await syncNow({ rescan: true });
       return { created };
     } catch (e) {
       setState({ status: cfg ? state.status : "off", message: e.message });
@@ -194,6 +253,6 @@
     onChange: (fn) => listeners.add(fn),
     connect,
     disconnect,
-    syncNow,
+    syncNow: () => syncNow({ rescan: true }),
   };
 })();
