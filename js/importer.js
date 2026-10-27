@@ -53,6 +53,7 @@
     ["one-time", /^(one[- ]?time|once|single|none|n\/a)$/i],
     ["weekly", /^(weekly|every week|wk)$/i],
     ["biweekly", /^(bi[- ]?weekly|fortnightly|every (2|two) weeks)$/i],
+    ["semimonthly", /^(semi[- ]?monthly|twice (a|per) month|2x (a )?month)$/i],
     ["monthly", /^(monthly|every month|mo)$/i],
     ["quarterly", /^(quarterly|every (3|three) months)$/i],
     ["annual", /^(annual|annually|yearly|every year|yr)$/i],

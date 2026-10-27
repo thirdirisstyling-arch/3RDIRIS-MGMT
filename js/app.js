@@ -49,11 +49,13 @@
 
   /* ── frequency & recurrence ─────────────────── */
   const FREQUENCIES = [
-    ["one-time", "One-time"], ["weekly", "Weekly"], ["biweekly", "Every 2 weeks"],
+    ["one-time", "One-time"], ["weekly", "Weekly"], ["biweekly", "Every 2 weeks"], ["semimonthly", "Twice a month"],
     ["monthly", "Monthly"], ["quarterly", "Quarterly"], ["annual", "Annual"],
   ];
   const freqLabel = (f) => (FREQUENCIES.find(([k]) => k === f) || [, ""])[1];
-  const isRecurring = (f) => f && f !== "one-time";
+  const isRecurring = (f) => !!f && f !== "one-time";
+  const lastOfMonth = (y, m) => new Date(y, m + 1, 0).getDate();
+
   function stepDate(s, freq, n = 1) {
     const d = parseYmd(s);
     if (freq === "weekly") d.setDate(d.getDate() + 7 * n);
@@ -64,47 +66,93 @@
       d.setDate(1);
       d.setMonth(d.getMonth() + months);
       // the 31st in a 30-day month lands on the 30th, not the 1st of the next
-      d.setDate(Math.min(day, new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()));
+      d.setDate(Math.min(day, lastOfMonth(d.getFullYear(), d.getMonth())));
     }
     return ymd(d);
   }
 
-  /* upcoming copies of recurring entries, between from and to (inclusive).
-     Each series (same kind, description, frequency) projects forward from its latest entry. */
-  function expectedEntries(from, to) {
-    const latest = {};
-    D().transactions.filter((t) => isRecurring(t.frequency)).forEach((t) => {
-      const k = [t.type, t.description.trim().toLowerCase(), t.frequency].join("|");
-      if (!latest[k] || t.date > latest[k].date) latest[k] = t;
-    });
+  /* the days of the month a twice-monthly entry falls on; without saved days, its own day and ~15 days apart */
+  function payDays(t) {
+    const saved = (t.days || []).map(Number).filter((n) => n >= 1 && n <= 31);
+    if (saved.length) return [...new Set(saved)].sort((a, b) => a - b);
+    const d = parseYmd(t.date).getDate();
+    return d <= 15 ? [d, d + 15] : [d - 15, d];
+  }
+  const parseDays = (text) => [...new Set(String(text || "").split(/[^\d]+/).map(Number).filter((n) => n >= 1 && n <= 31))].sort((a, b) => a - b);
+
+  /* scheduled dates after an entry's own date, up to `to` (inclusive) */
+  function occurrencesAfter(t, to) {
     const out = [];
-    Object.values(latest).forEach((t) => {
-      const anchor = t.dueDate || t.date;
-      for (let n = 1; n < 400; n++) {
-        const when = stepDate(anchor, t.frequency, n);
-        if (when > to) break;
-        if (when >= from) out.push({ source: t, date: when });
+    if (t.frequency === "semimonthly") {
+      const days = payDays(t);
+      const d0 = parseYmd(t.date);
+      for (let i = 0; i < 400; i++) {
+        const y = d0.getFullYear(), m = d0.getMonth() + i;
+        const yy = new Date(y, m, 1).getFullYear(), mm = new Date(y, m, 1).getMonth();
+        if (ymd(new Date(yy, mm, 1)) > to) break;
+        for (const day of days) {
+          const s = ymd(new Date(yy, mm, Math.min(day, lastOfMonth(yy, mm))));
+          if (s > t.date && s <= to) out.push(s);
+        }
       }
+      return [...new Set(out)];
+    }
+    for (let n = 1; n < 1000; n++) {
+      const s = stepDate(t.date, t.frequency, n);
+      if (s > to) break;
+      out.push(s);
+    }
+    return out;
+  }
+
+  /* entries with the same kind and description form a series; its latest entry sets the schedule */
+  const seriesKey = (t) => `${t.type}|${(t.description || "").trim().toLowerCase()}`;
+  function latestBySeries() {
+    const latest = {};
+    D().transactions.forEach((t) => {
+      const k = seriesKey(t), cur = latest[k];
+      if (!cur || t.date > cur.date || (t.date === cur.date && (t.createdAt || "") > (cur.createdAt || ""))) latest[k] = t;
+    });
+    return latest;
+  }
+
+  /* projected copies of recurring series between from and to (inclusive) */
+  function expectedEntries(from, to) {
+    const out = [];
+    Object.values(latestBySeries()).filter((t) => isRecurring(t.frequency)).forEach((t) => {
+      occurrencesAfter(t, to).filter((d) => d >= from).forEach((date) => out.push({ source: t, date }));
     });
     return out.sort((a, b) => a.date.localeCompare(b.date));
+  }
+
+  /* when an entry is next due: a recurring series' next unrecorded date, or a one-time entry's due date */
+  function nextDueOf(t, latest = latestBySeries()) {
+    if (!isRecurring(t.frequency)) return t.dueDate || "";
+    if (latest[seriesKey(t)] !== t) return "";
+    const horizon = stepDate(t.date, "annual", 2);
+    return occurrencesAfter(t, horizon)[0] || "";
   }
 
   function logExpected(e) {
     const t = e.source;
     editTransaction({
       type: t.type, description: t.description, amount: t.amount, scope: t.scope, categoryId: t.categoryId,
-      clientId: t.clientId, frequency: t.frequency, date: e.date, dueDate: t.dueDate ? e.date : "",
+      clientId: t.clientId, frequency: t.frequency, days: t.days, date: e.date,
     });
   }
 
-  function dueLabel(s) {
+  function dueLabel(s, { next = false } = {}) {
     if (!s) return "";
     const diff = Math.round((parseYmd(s) - parseYmd(todayStr())) / 864e5);
-    if (diff === 0) return "due today";
-    if (diff === 1) return "due tomorrow";
-    if (diff > 1 && diff <= 14) return `due in ${diff} days`;
-    return `due ${fmtDate(s, { month: "short", day: "numeric" })}`;
+    const word = next ? "next" : "due";
+    if (diff < 0 && next) return `past due · ${fmtDate(s, { month: "short", day: "numeric" })}`;
+    if (diff === 0) return `${word} today`;
+    if (diff === 1) return `${word} tomorrow`;
+    if (diff > 1 && diff <= 14) return `${word} in ${diff} days`;
+    return `${word} ${fmtDate(s, { month: "short", day: "numeric" })}`;
   }
+  const ordinal = (n) => n + (n % 10 === 1 && n !== 11 ? "st" : n % 10 === 2 && n !== 12 ? "nd" : n % 10 === 3 && n !== 13 ? "rd" : "th");
+  const dueClass = (s) => (!s ? "" : s < todayStr() ? "neg" : s <= stepDays(todayStr(), 14) ? "gold" : "");
 
   /* small per-browser view preferences */
   const PREFS_KEY = "3rdiris.prefs";
@@ -269,7 +317,7 @@
     const isNew = !tx.id;
     openForm({
       title: isNew ? (tx.type === "income" ? "Record Income" : "Record Expense") : "Amend Entry",
-      values: { type: "expense", date: todayStr(), scope: "personal", frequency: "one-time", ...tx },
+      values: { type: "expense", date: todayStr(), scope: "personal", frequency: "one-time", ...tx, days: (tx.days || []).join(", ") },
       fields: [
         { name: "type", label: "Kind", type: "segmented", options: [{ value: "expense", label: "Expense" }, { value: "income", label: "Income" }], span2: true },
         { name: "description", label: "Description", required: true, placeholder: "e.g. beeswax candles", span2: true },
@@ -279,17 +327,35 @@
         { name: "categoryId", label: "Category", type: "select", options: categoryOptions() },
         { name: "frequency", label: "Frequency", type: "select", options: FREQUENCIES.map(([value, label]) => ({ value, label })) },
         { name: "dueDate", label: "Due date", type: "date" },
+        { name: "days", label: "Days of the month", placeholder: "e.g. 3, 16" },
         { name: "clientId", label: "Client", type: "select", options: clientOptions(), span2: true },
         { name: "notes", label: "Notes", type: "textarea", span2: true },
       ],
       onChange: (v, root) => {
         // income doesn't need a budget category
-        const cat = $('[name="categoryId"]', root).closest("label");
-        cat.style.display = v.type === "income" ? "none" : "";
+        $('[name="categoryId"]', root).closest("label").style.display = v.type === "income" ? "none" : "";
+        // recurring entries are scheduled from their date, so a fixed due date only applies to one-time entries
+        const recurring = isRecurring(v.frequency);
+        $('[name="dueDate"]', root).closest("label").style.display = recurring ? "none" : "";
+        $('[name="days"]', root).closest("label").style.display = v.frequency === "semimonthly" ? "" : "none";
+        let hint = $("#nextDueHint", root);
+        if (!hint) {
+          hint = document.createElement("p");
+          hint.id = "nextDueHint";
+          hint.className = "form-hint";
+          $('[name="days"]', root).closest("label").after(hint);
+        }
+        const next = recurring && v.date ? occurrencesAfter({ date: v.date, frequency: v.frequency, days: parseDays(v.days) }, stepDate(v.date, "annual", 2))[0] : "";
+        hint.style.display = next ? "" : "none";
+        hint.innerHTML = next ? `↻ Next due <b>${esc(fmtDate(next, { weekday: "short", month: "long", day: "numeric" }))}</b>${v.frequency === "semimonthly" ? ` · on the ${esc(payDays({ date: v.date, days: parseDays(v.days) }).map(ordinal).join(" & "))}` : ""}` : "";
       },
       onSubmit: (v) => {
         if (!(v.amount > 0)) return "Amount must be more than zero.";
         if (v.type === "income") v.categoryId = "";
+        const days = parseDays(v.days);
+        if (v.frequency === "semimonthly" && v.days && days.length < 2) return "Give two days of the month, like 3, 16.";
+        v.days = v.frequency === "semimonthly" ? (days.length ? days : payDays({ date: v.date })) : [];
+        if (isRecurring(v.frequency)) v.dueDate = "";
         Store.upsert("transactions", { ...tx, ...v, amount: Math.round(v.amount * 100) / 100 });
         toast(isNew ? "Inscribed in the ledger." : "Entry amended.");
       },
@@ -574,6 +640,7 @@
     ledgerView: prefs.ledgerView === "calendar" ? "calendar" : "list",
     ledgerSort: prefs.ledgerSort && prefs.ledgerSort.key ? prefs.ledgerSort : { key: "date", dir: "desc" },
     ledgerDay: todayStr(),
+    ledgerProjected: prefs.ledgerProjected !== false,
     coffersMonth: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
     almanacMonth: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
     almanacDay: todayStr(),
@@ -601,8 +668,8 @@
       const q = QUOTES[Math.floor(Date.now() / 864e5) % QUOTES.length];
       const horizon = stepDays(today, 14);
       const dueSoon = [
-        ...d.transactions.filter((t) => t.dueDate && t.dueDate >= today && t.dueDate <= horizon).map((t) => ({ t, date: t.dueDate })),
-        ...expectedEntries(today, horizon).map((e) => ({ t: e.source, date: e.date, expected: true })),
+        ...d.transactions.filter((t) => !isRecurring(t.frequency) && t.dueDate && t.dueDate >= today && t.dueDate <= horizon).map((t) => ({ t, date: t.dueDate })),
+        ...expectedEntries(stepDays(today, -31), horizon).map((e) => ({ t: e.source, date: e.date, expected: true })),
       ].sort((a, b) => a.date.localeCompare(b.date)).slice(0, 8);
       const isEmpty = !d.transactions.length && !d.appointments.length && !d.clients.length;
       const name = d.settings.ownerName ? `, ${esc(d.settings.ownerName)}` : "";
@@ -648,7 +715,7 @@
             <div class="card">
               <div class="card-head"><h2>Due &amp; expected</h2><small>next 14 days</small></div>
               ${dueSoon.length ? `<ul class="list">${dueSoon.map((x) => `<li ${x.expected ? `data-expected="${x.t.id}@${x.date}"` : `data-tx="${x.t.id}"`} style="cursor:pointer">${dateChip(x.date)}
-                <div class="grow"><span class="title">${x.expected ? "↻ " : ""}${esc(x.t.description)}</span><span class="meta">${esc([x.expected ? "expected" : dueLabel(x.date), relDay(x.date), isRecurring(x.t.frequency) ? freqLabel(x.t.frequency) : ""].filter(Boolean).join(" · "))}</span></div>
+                <div class="grow"><span class="title">${x.expected ? "↻ " : ""}${esc(x.t.description)}</span><span class="meta">${x.date < today ? `<span class="neg">past due</span> · ` : ""}${esc([x.expected ? "" : dueLabel(x.date), relDay(x.date), isRecurring(x.t.frequency) ? freqLabel(x.t.frequency) : ""].filter(Boolean).join(" · "))}</span></div>
                 <span class="${x.t.type === "income" ? "pos" : ""}" style="font-variant-numeric:tabular-nums">${x.t.type === "income" ? "+" : "−"}${money(x.t.amount)}</span></li>`).join("")}</ul>` : empty("⏳", "Nothing due in the next two weeks.")}
             </div>
             <div class="card">
@@ -681,7 +748,7 @@
 
   const SORTS = {
     date: (a, b) => a.date.localeCompare(b.date),
-    due: (a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999"),
+    due: (a, b) => (a._due || "9999").localeCompare(b._due || "9999"),
     description: (a, b) => a.description.localeCompare(b.description, undefined, { sensitivity: "base" }),
     category: (a, b) => catName(a).localeCompare(catName(b)),
     frequency: (a, b) => freqRank(a) - freqRank(b),
@@ -722,9 +789,14 @@
     actions: () => `<button class="btn ghost" data-act="import">Import</button><button class="btn" data-act="add-income">+ Income</button><button class="btn primary" data-act="add-expense">+ Expense</button>`,
     render() {
       const key = monthKey(ui.ledgerMonth);
-      const rows = ledgerFiltered(key);
+      const latest = latestBySeries();
+      const rows = ledgerFiltered(key).map((t) => ({ ...t, _due: nextDueOf(t, latest) }));
+      const projected = ui.ledgerProjected ? projectedRows(key) : [];
       const inc = rows.filter((r) => r.type === "income").reduce((s, r) => s + r.amount, 0);
       const exp = rows.filter((r) => r.type === "expense").reduce((s, r) => s + r.amount, 0);
+      const pInc = projected.filter((r) => r.type === "income").reduce((s, r) => s + r.amount, 0);
+      const pExp = projected.filter((r) => r.type === "expense").reduce((s, r) => s + r.amount, 0);
+      const pSub = (v, label) => (projected.length ? `<div class="sub">${label} ${v}</div>` : "");
       const seg = (name, cur, opts) => `<div class="segmented" data-ui="${name}">${opts.map(([v, l]) => `<button class="${cur === v ? "on" : ""}" data-value="${v}">${l}</button>`).join("")}</div>`;
       const filtered = ui.ledgerSearch || ui.ledgerType !== "all" || ui.ledgerScope !== "all";
 
@@ -736,14 +808,15 @@
           ${seg("ledgerScope", ui.ledgerScope, [["all", "Both purses"], ["personal", "Personal"], ["business", "Business"]])}
           <span class="spacer"></span>
           <input type="search" id="ledgerSearch" placeholder="Search the ledger…" value="${esc(ui.ledgerSearch)}" style="max-width:220px">
+          <label class="check"><input type="checkbox" id="ledgerProjected" ${ui.ledgerProjected ? "checked" : ""}> Show projected</label>
           <button class="btn ghost sm" data-act="csv">Export CSV</button>
         </div>
         <div class="grid cols-3 stats" style="margin-bottom:18px">
-          <div class="card stat"><div class="label">Income</div><div class="value pos">${money(inc)}</div></div>
-          <div class="card stat"><div class="label">Expenses</div><div class="value">${money(exp)}</div></div>
-          <div class="card stat"><div class="label">Balance</div><div class="value ${inc - exp >= 0 ? "pos" : "neg"}">${money(inc - exp)}</div></div>
+          <div class="card stat"><div class="label">Income</div><div class="value pos">${money(inc)}</div>${pInc ? pSub(money(pInc), "+ projected") : ""}</div>
+          <div class="card stat"><div class="label">Expenses</div><div class="value">${money(exp)}</div>${pExp ? pSub(money(pExp), "+ projected") : ""}</div>
+          <div class="card stat"><div class="label">Balance</div><div class="value ${inc - exp >= 0 ? "pos" : "neg"}">${money(inc - exp)}</div>${pSub(`<b class="${inc + pInc - exp - pExp >= 0 ? "pos" : "neg"}">${money(inc + pInc - exp - pExp)}</b>`, "projected month end")}</div>
         </div>
-        ${ui.ledgerView === "calendar" ? ledgerCalendar() : ledgerTable(sortTx(rows), filtered)}`;
+        ${ui.ledgerView === "calendar" ? ledgerCalendar() : ledgerTable(sortTx([...rows, ...projected]), filtered)}`;
     },
     bind(root) {
       $$("[data-month]", root).forEach((b) => b.addEventListener("click", () => {
@@ -755,6 +828,7 @@
       const s = $("#ledgerSearch", root);
       s.addEventListener("input", () => { ui.ledgerSearch = s.value; render(); const n = $("#ledgerSearch"); n.focus(); n.setSelectionRange(n.value.length, n.value.length); });
       $$("[data-tx]", root).forEach((el) => el.addEventListener("click", (e) => { e.stopPropagation(); editTransaction(D().transactions.find((t) => t.id === el.dataset.tx)); }));
+      $("#ledgerProjected", root).addEventListener("change", (e) => { ui.ledgerProjected = prefs.ledgerProjected = e.target.checked; savePrefs(); render(); });
       $$("[data-sort]", root).forEach((b) => b.addEventListener("click", () => {
         const k = b.dataset.sort;
         // a new column starts newest/largest first, except text columns which start A→Z
@@ -779,23 +853,43 @@
     },
   };
 
+  /* projected copies of recurring series that fall in a month, shaped like ledger rows */
+  function projectedRows(key) {
+    const [y, m] = key.split("-").map(Number);
+    const from = `${key}-01`, to = `${key}-${pad(lastOfMonth(y, m - 1))}`;
+    return expectedEntries(from, to).filter((e) => passesFilters(e.source)).map((e) => ({
+      projected: true, source: e.source, id: `${e.source.id}@${e.date}`, date: e.date, _due: e.date,
+      type: e.source.type, description: e.source.description, amount: e.source.amount, scope: e.source.scope,
+      categoryId: e.source.categoryId, clientId: e.source.clientId, frequency: e.source.frequency, days: e.source.days,
+    }));
+  }
+
   function ledgerTable(rows, filtered) {
     if (!rows.length) return `<div class="card">${empty("✒", filtered ? "No entries match." : "No entries for this month yet.")}</div>`;
     const { key, dir } = ui.ledgerSort;
     const th = (k, label, cls = "") => `<th class="${cls}" aria-sort="${key === k ? (dir === "asc" ? "ascending" : "descending") : "none"}"><button class="sort ${key === k ? "on" : ""}" data-sort="${k}">${label}<span class="arrow">${key === k ? (dir === "asc" ? "▲" : "▼") : "◆"}</span></button></th>`;
     return `<div class="card"><div class="table-wrap"><table>
-      <thead><tr>${th("date", "Date")}${th("description", "Description")}${th("category", "Category", "hide-sm")}${th("frequency", "Frequency", "hide-sm")}${th("due", "Due", "hide-sm")}<th class="hide-sm">Purse</th>${th("amount", "Amount", "num")}</tr></thead>
+      <thead><tr>${th("date", "Date")}${th("description", "Description")}${th("category", "Category", "hide-sm")}${th("frequency", "Frequency", "hide-sm")}${th("due", "Next due", "hide-sm")}<th class="hide-sm">Purse</th>${th("amount", "Amount", "num")}</tr></thead>
       <tbody>${rows.map((t) => {
         const cl = clientById(t.clientId);
-        const meta = [cl && cl.name, t.notes].filter(Boolean).map(esc).join(" · ");
+        const meta = t.projected
+          ? `projected${t.date < todayStr() ? " · not recorded yet" : ""}`
+          : [cl && cl.name, t.notes].filter(Boolean).map(esc).join(" · ");
+        // recurring: when the series is next due; one-time: its own due date
+        const due = t.projected
+          ? `<span class="${dueClass(t.date)}">${esc(t.date < todayStr() ? "past due" : dueLabel(t.date))}</span>`
+          : t._due
+            ? `<span class="${isRecurring(t.frequency) ? dueClass(t._due) : t._due >= todayStr() ? dueClass(t._due) : ""}">${esc(dueLabel(t._due, { next: isRecurring(t.frequency) }))}</span>`
+            : `<small>—</small>`;
+        const freq = t.frequency ? `<span class="tag ${isRecurring(t.frequency) ? "freq" : ""}">${isRecurring(t.frequency) ? "↻ " : ""}${esc(freqLabel(t.frequency))}${t.frequency === "semimonthly" ? ` · ${esc(payDays(t).map(ordinal).join(" & "))}` : ""}</span>` : "";
         // on phones the hidden columns collapse into the description line
-        const small = [freqLabel(t.frequency) && isRecurring(t.frequency) ? freqLabel(t.frequency) : "", t.dueDate ? dueLabel(t.dueDate) : ""].filter(Boolean).join(" · ");
-        return `<tr data-tx="${t.id}" style="cursor:pointer">
+        const small = [isRecurring(t.frequency) ? freqLabel(t.frequency) : "", t.projected ? (t.date < todayStr() ? "past due" : "") : t._due ? dueLabel(t._due, { next: isRecurring(t.frequency) }) : ""].filter(Boolean).join(" · ");
+        return `<tr ${t.projected ? `data-expected="${t.source.id}@${t.date}" class="projected" title="Projected from ${esc(freqLabel(t.frequency).toLowerCase())} ${esc(t.description)}. Select to record it."` : `data-tx="${t.id}"`} style="cursor:pointer">
           <td style="white-space:nowrap">${fmtDate(t.date, { month: "short", day: "numeric" })}</td>
-          <td>${esc(t.description)}${meta ? `<br><small><i>${meta}</i></small>` : ""}${small ? `<small class="show-sm gold"><br>${esc(small)}</small>` : ""}</td>
+          <td>${t.projected ? "↻ " : ""}${esc(t.description)}${meta ? `<br><small><i>${meta}</i></small>` : ""}${small ? `<small class="show-sm gold"><br>${esc(small)}</small>` : ""}</td>
           <td class="hide-sm">${catTag(t)}</td>
-          <td class="hide-sm">${t.frequency ? `<span class="tag ${isRecurring(t.frequency) ? "freq" : ""}">${isRecurring(t.frequency) ? "↻ " : ""}${esc(freqLabel(t.frequency))}</span>` : ""}</td>
-          <td class="hide-sm" style="white-space:nowrap">${t.dueDate ? `<span class="${t.dueDate >= todayStr() && t.dueDate <= stepDays(todayStr(), 14) ? "gold" : ""}">${esc(dueLabel(t.dueDate))}</span>` : `<small>—</small>`}</td>
+          <td class="hide-sm">${freq}</td>
+          <td class="hide-sm" style="white-space:nowrap">${due}</td>
           <td class="hide-sm"><span class="tag ${t.scope === "business" ? "biz" : ""}">${esc(t.scope)}</span></td>
           <td class="num ${t.type === "income" ? "pos" : ""}">${t.type === "income" ? "+" : "−"}${money(t.amount)}</td>
         </tr>`;
@@ -814,9 +908,9 @@
     // leading/trailing days from neighbouring months show too, under the same filters
     D().transactions.filter(passesFilters).forEach((t) => {
       push(byDate, t.date, t);
-      if (t.dueDate && t.dueDate !== t.date) push(dueBy, t.dueDate, t);
+      if (!isRecurring(t.frequency) && t.dueDate && t.dueDate !== t.date) push(dueBy, t.dueDate, t);
     });
-    expectedEntries(ymd(start), ymd(gridEnd)).filter((e) => passesFilters(e.source)).forEach((e) => push(expBy, e.date, e));
+    if (ui.ledgerProjected) expectedEntries(ymd(start), ymd(gridEnd)).filter((e) => passesFilters(e.source)).forEach((e) => push(expBy, e.date, e));
 
     const today = todayStr();
     let cells = "";
@@ -829,7 +923,7 @@
       const chips = [
         ...dues.map((t) => `<span class="ev due" data-tx="${t.id}" title="Due: ${esc(t.description)}">⏳ ${esc(t.description)}</span>`),
         ...evs.map((t) => `<span class="ev ${t.type === "income" ? "inc" : "exp"}" data-tx="${t.id}" title="${esc(t.description)} ${t.type === "income" ? "+" : "−"}${esc(money(t.amount))}">${esc(t.description)}</span>`),
-        ...exps.map((e) => `<span class="ev expected" data-expected="${e.source.id}@${e.date}" title="Expected: ${esc(e.source.description)} (${esc(freqLabel(e.source.frequency))}). Select to record it.">↻ ${esc(e.source.description)}</span>`),
+        ...exps.map((e) => `<span class="ev expected" data-expected="${e.source.id}@${e.date}" title="Projected: ${esc(e.source.description)} (${esc(freqLabel(e.source.frequency))}). Select to record it.">↻ ${esc(e.source.description)}</span>`),
       ];
       const cls = ["day", d.getMonth() !== m.getMonth() && "other", s === today && "today", s === ui.ledgerDay && "selected"].filter(Boolean).join(" ");
       cells += `<div class="${cls}" data-lday="${s}" role="button" tabindex="0" aria-label="${fmtDate(s, { weekday: "long", month: "long", day: "numeric" })}">
@@ -843,18 +937,18 @@
     const day = ui.ledgerDay;
     const dayEvs = byDate[day] || [], dayDues = dueBy[day] || [], dayExp = expBy[day] || [];
     const li = (t, extra = "") => `<li data-tx="${t.id}" style="cursor:pointer"><span style="width:10px;height:10px;border-radius:50%;flex:none;background:${t.type === "income" ? "var(--sage)" : esc((catById(t.categoryId) || {}).color || "#6f6774")}"></span>
-      <div class="grow"><span class="title">${esc(t.description)}</span><span class="meta">${[extra, catName(t) === "~" ? "uncategorized" : catName(t), isRecurring(t.frequency) ? freqLabel(t.frequency) : "", t.dueDate && !extra ? dueLabel(t.dueDate) : ""].filter(Boolean).map(esc).join(" · ")}</span></div>
+      <div class="grow"><span class="title">${esc(t.description)}</span><span class="meta">${[extra, catName(t) === "~" ? "uncategorized" : catName(t), isRecurring(t.frequency) ? freqLabel(t.frequency) : "", !extra && nextDueOf(t) ? dueLabel(nextDueOf(t), { next: isRecurring(t.frequency) }) : ""].filter(Boolean).map(esc).join(" · ")}</span></div>
       <span class="${t.type === "income" ? "pos" : ""}" style="font-variant-numeric:tabular-nums">${t.type === "income" ? "+" : "−"}${money(t.amount)}</span></li>`;
     const dayTotal = dayEvs.reduce((a, t) => a + signed(t), 0);
 
     return `<div class="grid split">
       <div class="card"><div class="calendar ledger-cal">${dows}${cells}</div>
-        <p class="cal-key"><span class="ev exp">spent</span><span class="ev inc">received</span><span class="ev due">⏳ due</span><span class="ev expected">↻ expected</span></p></div>
+        <p class="cal-key"><span class="ev exp">spent</span><span class="ev inc">received</span><span class="ev due">⏳ due</span><span class="ev expected">↻ projected</span></p></div>
       <div class="card" style="align-self:start">
         <div class="card-head"><h2>${fmtDate(day, { weekday: "long", month: "long", day: "numeric" })}</h2><button class="btn sm" data-act="add-expense-day">+ Add</button></div>
         ${dayEvs.length ? `<ul class="list">${dayEvs.map((t) => li(t)).join("")}</ul><p style="text-align:right;margin:8px 0 0;color:var(--ash)">Day total <b class="${dayTotal >= 0 ? "pos" : ""}">${dayTotal >= 0 ? "+" : "−"}${money(Math.abs(dayTotal))}</b></p>` : ""}
         ${dayDues.length ? `<h3 class="sub-h">Due this day</h3><ul class="list">${dayDues.map((t) => li(t, `entered ${fmtDate(t.date, { month: "short", day: "numeric" })}`)).join("")}</ul>` : ""}
-        ${dayExp.length ? `<h3 class="sub-h">Expected</h3><ul class="list">${dayExp.map((e) => `<li data-expected="${e.source.id}@${e.date}" style="cursor:pointer"><span class="gold">↻</span><div class="grow"><span class="title">${esc(e.source.description)}</span><span class="meta">${esc(freqLabel(e.source.frequency))} · select to record it</span></div><span style="color:var(--ash)">${e.source.type === "income" ? "+" : "−"}${money(e.source.amount)}</span></li>`).join("")}</ul>` : ""}
+        ${dayExp.length ? `<h3 class="sub-h">Projected</h3><ul class="list">${dayExp.map((e) => `<li data-expected="${e.source.id}@${e.date}" style="cursor:pointer"><span class="gold">↻</span><div class="grow"><span class="title">${esc(e.source.description)}</span><span class="meta">${esc(freqLabel(e.source.frequency))} · select to record it</span></div><span style="color:var(--ash)">${e.source.type === "income" ? "+" : "−"}${money(e.source.amount)}</span></li>`).join("")}</ul>` : ""}
         ${!dayEvs.length && !dayDues.length && !dayExp.length ? empty("✒", "Nothing recorded this day.") : ""}
       </div>
     </div>`;

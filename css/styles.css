@@ -443,3 +443,11 @@ label.check code { color: var(--gold); font-size: 13px; }
 @media (max-width: 600px) {
   .show-sm { display: inline; }
 }
+
+/* ── projected entries & next due ─────────── */
+tr.projected td { color: var(--ash); font-style: italic; background: repeating-linear-gradient(135deg, transparent 0 8px, rgba(139, 106, 149, .05) 8px 16px); }
+tr.projected td.num { color: #c7a9cf; }
+tr.projected td.num.pos { color: #a9bca4; }
+tr.projected .tag { opacity: .75; }
+.form-hint { grid-column: 1 / -1; margin: -4px 0 0; color: var(--parchment); font-style: italic; font-size: 16px; }
+.form-hint b { color: var(--gold); font-style: normal; font-weight: 500; }
