@@ -451,3 +451,37 @@ tr.projected td.num.pos { color: #a9bca4; }
 tr.projected .tag { opacity: .75; }
 .form-hint { grid-column: 1 / -1; margin: -4px 0 0; color: var(--parchment); font-style: italic; font-size: 16px; }
 .form-hint b { color: var(--gold); font-style: normal; font-weight: 500; }
+
+/* ── agenda ───────────────────────────────── */
+.nav a { position: relative; }
+.nav-badge {
+  margin-left: auto; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 999px;
+  display: inline-grid; place-items: center; font-size: 13px; font-variant-numeric: tabular-nums;
+  background: var(--gold); color: var(--ink); font-weight: 600;
+}
+.nav-badge[hidden] { display: none; }
+
+.quick-add { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; padding: 14px 16px; }
+.quick-add input[name=title] { flex: 1 1 240px; }
+.quick-add input[type=date] { flex: 0 0 auto; width: auto; }
+.quick-add select { flex: 0 0 auto; width: auto; }
+
+.list.tasks li { cursor: pointer; align-items: flex-start; }
+.list.tasks .grow { padding-top: 2px; }
+.list.tasks .title { white-space: normal; }
+.check-btn {
+  flex: none; width: 24px; height: 24px; margin-top: 2px; border-radius: 50%; cursor: pointer;
+  border: 1px solid var(--gold-dim); background: var(--ink); color: transparent;
+  display: grid; place-items: center; font-size: 12px; padding: 0; transition: background .2s, color .2s, border-color .2s;
+}
+.check-btn:hover { border-color: var(--gold); color: var(--gold-dim); }
+.check-btn:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(195, 165, 104, .25); }
+.task.prio-high .check-btn { border-color: var(--rose); }
+.task.prio-low .title { color: var(--parchment); }
+.task .prio { color: var(--rose); font-size: 13px; }
+.task.done .check-btn { background: var(--gold); border-color: var(--gold); color: var(--ink); }
+.task.done .title { text-decoration: line-through; text-decoration-color: var(--gold-dim); color: var(--smoke); }
+.task.done .meta { opacity: .6; }
+.more-link { margin: 8px 0 0; text-align: right; font-style: italic; font-size: 15px; color: var(--ash); }
+h2.neg { color: var(--rose); }
+h2.gold { color: var(--gold); }

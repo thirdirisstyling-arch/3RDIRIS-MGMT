@@ -407,6 +407,53 @@
     });
   }
 
+  const PRIORITIES = [["high", "High"], ["normal", "Normal"], ["low", "Low"]];
+
+  function editTask(task = {}) {
+    const isNew = !task.id;
+    openForm({
+      title: isNew ? "New Task" : "Amend Task",
+      values: { priority: "normal", scope: "personal", ...task },
+      fields: [
+        { name: "title", label: "What needs doing", required: true, placeholder: "e.g. send the invoice", span2: true },
+        { name: "due", label: "Due", type: "date" },
+        { name: "priority", label: "Priority", type: "select", options: PRIORITIES.map(([value, label]) => ({ value, label })) },
+        { name: "scope", label: "Purse", type: "segmented", options: [{ value: "personal", label: "Personal" }, { value: "business", label: "Business" }] },
+        { name: "clientId", label: "Client", type: "select", options: clientOptions() },
+        { name: "notes", label: "Notes", type: "textarea", span2: true },
+      ],
+      onSubmit: (v) => {
+        Store.upsert("tasks", { done: false, doneAt: "", ...task, ...v });
+        toast(isNew ? "Added to the agenda." : "Task amended.");
+      },
+      onDelete: isNew ? null : () => { Store.remove("tasks", task.id); toast("Task banished."); },
+    });
+  }
+
+  function toggleTask(id) {
+    const t = D().tasks.find((x) => x.id === id);
+    if (!t) return;
+    Store.upsert("tasks", { id, done: !t.done, doneAt: t.done ? "" : new Date().toISOString() });
+    toast(t.done ? "Back on the agenda." : "Done. ✦");
+  }
+
+  /* open tasks, soonest first: by due date (undated last), then priority, then when added */
+  const PRIORITY_RANK = { high: 0, normal: 1, low: 2 };
+  const byTaskOrder = (a, b) => (a.due || "9999").localeCompare(b.due || "9999") || (PRIORITY_RANK[a.priority] ?? 1) - (PRIORITY_RANK[b.priority] ?? 1) || (a.createdAt || "").localeCompare(b.createdAt || "");
+  const pressingTasks = () => D().tasks.filter((t) => !t.done && t.due && t.due <= todayStr()).sort(byTaskOrder);
+
+  function taskLi(t) {
+    const cl = clientById(t.clientId);
+    const today = todayStr();
+    const when = t.done ? (t.doneAt ? `done ${esc(fmtDate(ymd(new Date(t.doneAt)), { month: "short", day: "numeric" }))}` : "done") : !t.due ? "" : t.due < today ? `<span class="neg">overdue · ${esc(fmtDate(t.due, { month: "short", day: "numeric" }))}</span>` : t.due === today ? `<span class="gold">today</span>` : esc(relDay(t.due) === "tomorrow" ? "tomorrow" : fmtDate(t.due));
+    const meta = [when, cl ? esc(cl.name) : "", t.notes ? `<i>${esc(t.notes.length > 70 ? t.notes.slice(0, 70) + "…" : t.notes)}</i>` : ""].filter(Boolean).join(" · ");
+    return `<li class="task ${t.done ? "done" : ""} prio-${esc(t.priority || "normal")}" data-task="${t.id}">
+      <button class="check-btn" data-toggle-task="${t.id}" role="checkbox" aria-checked="${t.done ? "true" : "false"}" aria-label="${t.done ? "Mark not done" : "Mark done"}: ${esc(t.title)}"><span>✦</span></button>
+      <div class="grow"><span class="title">${t.priority === "high" ? `<span class="prio" title="High priority">❖</span> ` : ""}${esc(t.title)}</span>${meta ? `<span class="meta">${meta}</span>` : ""}</div>
+      <span class="tag ${t.scope === "business" ? "biz" : ""} hide-sm">${esc(t.scope || "personal")}</span>
+    </li>`;
+  }
+
   function editCategory(cat = {}) {
     const isNew = !cat.id;
     openForm({
@@ -646,6 +693,8 @@
     almanacDay: todayStr(),
     codexStatus: "all",
     codexSearch: "",
+    agendaScope: "all",
+    agendaShowDone: prefs.agendaShowDone === true,
   };
 
   const views = {};
@@ -712,6 +761,15 @@
             ${recent.length ? `<ul class="list">${recent.map((x) => txLi(x)).join("")}</ul>` : empty("✒", "The ledger is empty.")}
           </div>
           <div class="grid" style="align-content:start">
+            <div class="card">
+              <div class="card-head"><h2>Today's agenda</h2><a href="#agenda">agenda →</a></div>
+              ${(() => {
+                const list = pressingTasks();
+                return list.length
+                  ? `<ul class="list tasks">${list.slice(0, 6).map(taskLi).join("")}</ul>${list.length > 6 ? `<p class="more-link"><a href="#agenda">${list.length - 6} more due</a></p>` : ""}`
+                  : empty("☑", D().tasks.some((t) => !t.done) ? "Nothing due today." : "No tasks yet. Add one in the Agenda.");
+              })()}
+            </div>
             <div class="card">
               <div class="card-head"><h2>Due &amp; expected</h2><small>next 14 days</small></div>
               ${dueSoon.length ? `<ul class="list">${dueSoon.map((x) => `<li ${x.expected ? `data-expected="${x.t.id}@${x.date}"` : `data-tx="${x.t.id}"`} style="cursor:pointer">${dateChip(x.date)}
@@ -1127,6 +1185,70 @@
     },
   };
 
+  views.agenda = {
+    title: "Agenda",
+    actions: () => `${D().tasks.some((t) => t.done) ? `<button class="btn ghost" data-act="clear-done">Clear finished</button>` : ""}<button class="btn primary" data-act="add-task">+ Task</button>`,
+    render() {
+      const today = todayStr(), week = stepDays(today, 7);
+      const all = D().tasks.filter((t) => ui.agendaScope === "all" || (t.scope || "personal") === ui.agendaScope);
+      const open = all.filter((t) => !t.done).sort(byTaskOrder);
+      const done = all.filter((t) => t.done).sort((a, b) => (b.doneAt || "").localeCompare(a.doneAt || ""));
+      const groups = [
+        ["Overdue", "neg", open.filter((t) => t.due && t.due < today)],
+        ["Today", "gold", open.filter((t) => t.due === today)],
+        ["This week", "", open.filter((t) => t.due > today && t.due <= week)],
+        ["Later", "", open.filter((t) => t.due > week)],
+        ["Someday", "", open.filter((t) => !t.due)],
+      ].filter(([, , list]) => list.length);
+      const doneThisWeek = D().tasks.filter((t) => t.done && t.doneAt && t.doneAt.slice(0, 10) > stepDays(today, -7)).length;
+      const seg = `<div class="segmented" data-ui="agendaScope">${[["all", "All"], ["personal", "Personal"], ["business", "Business"]].map(([v, l]) => `<button class="${ui.agendaScope === v ? "on" : ""}" data-value="${v}">${l}</button>`).join("")}</div>`;
+      return `
+        <form class="card quick-add" id="quickAdd" autocomplete="off">
+          <input name="title" placeholder="Add a task and press Enter…" aria-label="New task" required>
+          <input name="due" type="date" aria-label="Due date" title="Due date (optional)">
+          <select name="priority" aria-label="Priority">${PRIORITIES.map(([v, l]) => `<option value="${v}" ${v === "normal" ? "selected" : ""}>${l}</option>`).join("")}</select>
+          <button class="btn primary" type="submit">Add</button>
+        </form>
+        <div class="toolbar" style="margin-top:16px">
+          ${seg}
+          <span class="spacer"></span>
+          <label class="check"><input type="checkbox" id="agendaShowDone" ${ui.agendaShowDone ? "checked" : ""}> Show finished</label>
+        </div>
+        <div class="grid cols-4 stats" style="margin-bottom:18px">
+          <div class="card stat"><div class="label">Open</div><div class="value">${open.length}</div></div>
+          <div class="card stat"><div class="label">Due today</div><div class="value gold">${open.filter((t) => t.due === today).length}</div></div>
+          <div class="card stat"><div class="label">Overdue</div><div class="value ${open.some((t) => t.due && t.due < today) ? "neg" : ""}">${open.filter((t) => t.due && t.due < today).length}</div></div>
+          <div class="card stat"><div class="label">Done this week</div><div class="value pos">${doneThisWeek}</div></div>
+        </div>
+        ${groups.length ? `<div class="grid">${groups.map(([label, cls, list]) => `
+          <div class="card">
+            <div class="card-head"><h2 class="${cls}">${label}</h2><small>${list.length}</small></div>
+            <ul class="list tasks">${list.map(taskLi).join("")}</ul>
+          </div>`).join("")}</div>` : `<div class="card">${empty("☑", all.length ? "Everything's done. Rest a while." : "No tasks yet. Add one above.")}</div>`}
+        ${ui.agendaShowDone && done.length ? `<div class="card" style="margin-top:18px">
+          <div class="card-head"><h2>Finished</h2><small>${done.length}</small></div>
+          <ul class="list tasks">${done.slice(0, 50).map(taskLi).join("")}</ul>
+          ${done.length > 50 ? `<p class="more-link">and ${done.length - 50} older</p>` : ""}
+        </div>` : ""}`;
+    },
+    bind(root) {
+      bindSegments(root);
+      $("#agendaShowDone", root).addEventListener("change", (e) => { ui.agendaShowDone = prefs.agendaShowDone = e.target.checked; savePrefs(); render(); });
+      $("#quickAdd", root).addEventListener("submit", (e) => {
+        e.preventDefault();
+        const f = new FormData(e.target);
+        const title = String(f.get("title") || "").trim();
+        if (!title) return;
+        Store.upsert("tasks", {
+          title, due: f.get("due") || "", priority: f.get("priority") || "normal",
+          scope: ui.agendaScope === "business" ? "business" : "personal", clientId: "", notes: "", done: false, doneAt: "",
+        });
+        toast("Added to the agenda.");
+        $("#quickAdd input[name=title]").focus();
+      });
+    },
+  };
+
   views.archive = {
     title: "Archive",
     actions: () => "",
@@ -1154,7 +1276,7 @@
               <button class="btn ghost" data-act="csv-all">All entries as CSV</button>
               <button class="btn ghost" data-act="import">Import entries</button>
             </div>
-            <p style="color:var(--ash);font-size:15px;margin:0"><i>${D().transactions.length} ledger entries · ${D().appointments.length} appointments · ${D().clients.length} clients · ${D().categories.length} categories</i></p>
+            <p style="color:var(--ash);font-size:15px;margin:0"><i>${D().transactions.length} ledger entries · ${D().appointments.length} appointments · ${D().clients.length} clients · ${D().tasks.length} tasks · ${D().categories.length} categories</i></p>
           </div>
           <div class="card">
             <div class="card-head"><h2>Rituals</h2></div>
@@ -1211,6 +1333,14 @@
     "add-expense-day": () => editTransaction({ type: "expense", date: ui.ledgerDay }),
     "add-client": () => editClient(),
     "add-category": () => editCategory(),
+    "add-task": () => editTask({ scope: ui.agendaScope === "business" ? "business" : "personal" }),
+    "clear-done": () => {
+      const n = D().tasks.filter((t) => t.done).length;
+      if (!n) return;
+      D().tasks = D().tasks.filter((t) => !t.done);
+      Store.save();
+      toast(`${n} finished task${n === 1 ? "" : "s"} cleared.`);
+    },
     import: () => openImport(),
     seed: () => { Store.seedSample(); toast("Sample pages summoned."); },
     export: () => download(`3rd-iris-backup-${todayStr()}.json`, Store.exportJSON(), "application/json"),
@@ -1229,7 +1359,12 @@
   };
   document.addEventListener("click", (e) => {
     const b = e.target.closest("[data-act]");
-    if (b && actions[b.dataset.act]) actions[b.dataset.act]();
+    if (b && actions[b.dataset.act]) return actions[b.dataset.act]();
+    // tasks behave the same wherever they're listed
+    const tick = e.target.closest("[data-toggle-task]");
+    if (tick) return toggleTask(tick.dataset.toggleTask);
+    const task = e.target.closest("[data-task]");
+    if (task && !e.target.closest("a")) editTask(D().tasks.find((t) => t.id === task.dataset.task));
   });
 
   /* ── chrome: router, sidebar, moon ─────────── */
@@ -1248,6 +1383,10 @@
     root.innerHTML = v.render();
     v.bind && v.bind(root);
     $$(".nav a").forEach((a) => a.classList.toggle("active", a.dataset.view === name));
+    const due = pressingTasks().length, badge = $("#agendaBadge");
+    badge.textContent = due;
+    badge.hidden = !due;
+    badge.title = `${due} task${due === 1 ? "" : "s"} due or overdue`;
   }
 
   function renderChrome() {

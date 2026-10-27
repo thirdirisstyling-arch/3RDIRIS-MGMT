@@ -6,8 +6,9 @@ A productivity and life-management app for a creative entrepreneur, styled as th
 
 | | |
 |---|---|
-| **Sanctum** | Overview of the month: income, spending, net, budget left, bills due and expected in the next two weeks, upcoming appointments, spending by category, recent entries, client counts and the moon phase |
+| **Sanctum** | Overview of the month: income, spending, net, budget left, bills due and expected in the next two weeks, today's tasks, upcoming appointments, spending by category, recent entries, client counts and the moon phase |
 | **Ledger** | Personal and business expenses and income, each with a frequency (one-time, weekly, every 2 weeks, twice a month on chosen days, monthly, quarterly or annual). Recurring entries show when they're next due and are projected into the months ahead, with a projected month-end balance; recording a projected entry moves its series forward. One-time entries can have a fixed due date. Sort by any column, filter by month, kind and purse, search, bulk import, and export to CSV. A calendar view shows each day's entries, due dates, and recurring entries projected forward |
+| **Agenda** | To-do list with quick add, optional due date, priority, purse and client. Grouped into overdue, today, this week, later and someday; tick tasks off here or from the overview, and clear finished ones. The nav shows how many are due |
 | **Coffers** | Monthly budgets per category, split into personal and business purses, with progress bars and overspend warnings |
 | **Almanac** | Month calendar with a day agenda and upcoming list. Click a day to select it, double-click to book on that day |
 | **Codex** | Clients with standing (lead, active or past), contact details, rate, notes, lifetime earnings, next appointment, and quick *Book* and *Log payment* buttons |

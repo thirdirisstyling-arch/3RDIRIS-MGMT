@@ -23,6 +23,7 @@
       transactions: [],
       appointments: [],
       clients: [],
+      tasks: [],
     };
   }
 
@@ -47,6 +48,7 @@
       transactions: Array.isArray(d.transactions) ? d.transactions : [],
       appointments: Array.isArray(d.appointments) ? d.appointments : [],
       clients: Array.isArray(d.clients) ? d.clients : [],
+      tasks: Array.isArray(d.tasks) ? d.tasks : [],
     };
   }
 
@@ -79,6 +81,7 @@
     data[collection] = data[collection].filter((r) => r.id !== id);
     if (collection === "clients") {
       data.appointments.forEach((a) => { if (a.clientId === id) a.clientId = ""; });
+      data.tasks.forEach((t) => { if (t.clientId === id) t.clientId = ""; });
       data.transactions.forEach((t) => { if (t.clientId === id) t.clientId = ""; });
     }
     if (collection === "categories") {
@@ -130,6 +133,17 @@
       { title: "Tea with the coven", date: iso(-1), start: "19:00", end: "21:00", clientId: "", location: "Home", notes: "" },
     ].map((a) => ({ ...a, id: uid(), createdAt: new Date().toISOString() }));
     data.appointments.push(...appts);
+
+    const tasks = [
+      { title: "Send Elias the shoot moodboard", due: iso(0), priority: "high", scope: "business", clientId: elias.id },
+      { title: "Reorder foils & developer", due: iso(1), priority: "normal", scope: "business", clientId: "" },
+      { title: "Follow up with Wren about the Samhain date", due: iso(-1), priority: "high", scope: "business", clientId: wren.id },
+      { title: "Return library books", due: iso(4), priority: "low", scope: "personal", clientId: "" },
+      { title: "Update portfolio with autumn work", due: "", priority: "normal", scope: "business", clientId: "" },
+      { title: "Repot the moonflower", due: "", priority: "low", scope: "personal", clientId: "" },
+      { title: "Invoice Morgana for the styling session", due: iso(-2), priority: "normal", scope: "business", clientId: morgana.id, done: true, doneAt: new Date().toISOString() },
+    ].map((t) => ({ notes: "", done: false, doneAt: "", ...t, id: uid(), createdAt: new Date().toISOString() }));
+    data.tasks.push(...tasks);
     save();
   }
 
