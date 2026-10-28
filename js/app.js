@@ -47,6 +47,21 @@
     return diff > 0 ? `in ${diff} days` : `${-diff} days ago`;
   };
 
+  /* images are stored in IndexedDB and filled in after each render */
+  const imgTag = (id, alt = "") => {
+    const url = window.Images ? Images.cachedUrl(id) : "";
+    return `<img data-img="${esc(id)}" alt="${esc(alt)}" ${url ? `src="${url}"` : ""} loading="lazy">`;
+  };
+  function hydrateImages(root = document) {
+    if (!window.Images) return;
+    $$("img[data-img]:not([src])", root).forEach((img) => {
+      Images.urlFor(img.dataset.img).then((url) => {
+        if (url) img.src = url;
+        else img.closest(".scrap-img, .img-preview")?.classList.add("arriving");
+      }).catch(() => {});
+    });
+  }
+
   /* ── frequency & recurrence ─────────────────── */
   const FREQUENCIES = [
     ["one-time", "One-time"], ["weekly", "Weekly"], ["biweekly", "Every 2 weeks"], ["semimonthly", "Twice a month"],
@@ -242,6 +257,19 @@
         <button type="button" class="btn ghost sm" data-add-step>+ Add a step</button></div>`;
     }
     if (f.type === "note") return `<p class="form-hint" id="${f.name}"></p>`;
+    if (f.type === "image") {
+      const im = v && v.id ? v : null;
+      return `<div class="${cls} img-field" data-image-field="${f.name}" data-image-id="${esc(im ? im.id : "")}" data-w="${im ? im.w : 0}" data-h="${im ? im.h : 0}">
+        <label class="field">${esc(f.label)}</label>
+        <div class="img-preview">${im ? imgTag(im.id) : `<span>No image</span>`}</div>
+        <div class="toolbar" style="margin:8px 0 0">
+          <label class="btn ghost sm" style="display:inline-block">${im ? "Replace" : "Add an image"}<input type="file" accept="image/*" data-image-input hidden></label>
+          ${im ? `<button type="button" class="btn ghost sm" data-image-remove>Remove</button>` : ""}
+        </div></div>`;
+    }
+    if (f.datalist) {
+      return `<label class="${cls}">${esc(f.label)}<input type="text" name="${f.name}" value="${esc(v)}" ${ph} list="dl-${f.name}"><datalist id="dl-${f.name}">${f.datalist.map((o) => `<option value="${esc(o)}">`).join("")}</datalist></label>`;
+    }
     const extra = f.type === "number" ? `step="${f.step || "0.01"}" min="${f.min ?? 0}" inputmode="decimal"` : "";
     return `<label class="${cls}">${esc(f.label)}<input type="${f.type || "text"}" name="${f.name}" value="${esc(v)}" ${ph} ${req} ${extra}></label>`;
   }
@@ -250,13 +278,18 @@
    * openForm({ title, fields, values, submitLabel, onSubmit(values) -> string|void, onDelete })
    * onSubmit may return an error message to keep the dialog open.
    */
-  function openForm({ title, fields, values = {}, submitLabel = "Inscribe", onSubmit, onDelete, onChange }) {
+  function openForm({ title, fields, values = {}, submitLabel = "Inscribe", onSubmit, onDelete, onChange, extra = [] }) {
     modal.classList.remove("wide");
     $("#modalTitle").textContent = title;
     $("#modalBody").innerHTML = `<div class="form-grid">${fields.map((f) => fieldHTML(f, values[f.name])).join("")}</div><p class="form-error" id="formError"></p>`;
     $("#modalFoot").innerHTML =
       (onDelete ? `<button type="button" class="btn danger" data-delete>Banish</button>` : "") +
+      extra.map((x, i) => `<button type="button" class="btn ghost" data-extra="${i}">${esc(x.label)}</button>`).join("") +
       `<span class="spacer"></span><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary">${esc(submitLabel)}</button>`;
+    $$("[data-extra]", modal).forEach((b) => b.addEventListener("click", () => {
+      // extra actions see the form as it stands; returning true closes the dialog
+      if (extra[+b.dataset.extra].onClick(collect(fields))) modal.close();
+    }));
 
     $$(".segmented", modal).forEach((seg) => {
       seg.addEventListener("click", (e) => {
@@ -292,7 +325,8 @@
       });
     }
     modal.showModal();
-    const first = $("input:not([type=hidden]), select, textarea", modal);
+    hydrateImages(modal);
+    const first = $("input:not([type=hidden]):not([type=file]), select, textarea", modal);
     if (first) first.focus();
   }
 
@@ -304,6 +338,11 @@
   function collect(fields) {
     const out = {};
     fields.forEach((f) => {
+      if (f.type === "image") {
+        const box = $(`[data-image-field="${f.name}"]`, modal);
+        out[f.name] = box && box.dataset.imageId ? { id: box.dataset.imageId, w: +box.dataset.w, h: +box.dataset.h } : null;
+        return;
+      }
       if (f.type === "steps") {
         out[f.name] = $$(".step-row", modal).map((row) => ({
           id: row.dataset.stepId || Store.uid(),
@@ -318,6 +357,21 @@
     });
     return out;
   }
+
+  modal.addEventListener("change", async (e) => {
+    const input = e.target.closest("[data-image-input]");
+    if (!input || !input.files[0]) return;
+    const box = input.closest("[data-image-field]");
+    $(".img-preview", box).innerHTML = `<span>Shrinking…</span>`;
+    try {
+      const im = await Images.fromFile(input.files[0]);
+      Object.assign(box.dataset, { imageId: im.id, w: im.w, h: im.h });
+      $(".img-preview", box).innerHTML = imgTag(im.id);
+      hydrateImages(box);
+    } catch (err) {
+      $(".img-preview", box).innerHTML = `<span class="neg">${esc(err.message || "Couldn't read that image.")}</span>`;
+    }
+  });
 
   modal.addEventListener("keydown", (e) => {
     const row = e.target.closest(".step-row");
@@ -340,6 +394,14 @@
       return;
     }
     if (e.target.closest("[data-remove-step]")) { e.target.closest(".step-row").remove(); return; }
+    if (e.target.closest("[data-image-remove]")) {
+      const box = e.target.closest("[data-image-field]");
+      Object.assign(box.dataset, { imageId: "", w: 0, h: 0 });
+      $(".img-preview", box).innerHTML = "<span>No image</span>";
+      e.target.closest("[data-image-remove]").remove();
+      $("#modalBody").oninput && $("#modalBody").oninput();
+      return;
+    }
     if (e.target.closest("[data-close]")) modal.close();
     else if (e.target === modal) modal.close(); // backdrop click
   });
@@ -910,6 +972,8 @@
     codexSearch: "",
     agendaScope: "all",
     agendaShowDone: prefs.agendaShowDone === true,
+    cabinetShelf: "all",
+    cabinetSearch: "",
     agendaView: prefs.agendaView === "list" ? "list" : "matrix",
     expandedTasks: new Set(),
     draw: null, // { cardId, taskId, fresh } after drawing; null shows the card of the day
@@ -1523,6 +1587,187 @@
       </div>`).join("")}</div>`;
   }
 
+  /* ── the Cabinet: ideas, images, notes and links ── */
+  const INKS = [["", "None"], ["gold", "Gold"], ["rose", "Rose"], ["plum", "Plum"], ["sage", "Sage"], ["blue", "Blue"]];
+  const shelvesInUse = () => [...new Set(D().ideas.map((i) => (i.shelf || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  const parseTags = (txt) => [...new Set(String(txt || "").split(/[,#]/).map((t) => t.trim().toLowerCase()).filter(Boolean))];
+  const URL_RE = /^https?:\/\/\S+$/i;
+  const domainOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return u; } };
+  const currentShelf = () => (ui.cabinetShelf && ui.cabinetShelf !== "all" && ui.cabinetShelf !== "none" ? ui.cabinetShelf : "");
+
+  function newIdea(fields) {
+    Store.upsert("ideas", { title: "", text: "", link: "", imageId: "", imageW: 0, imageH: 0, imageGist: "", tags: [], ink: "", pinned: false, shelf: currentShelf(), ...fields });
+  }
+
+  async function addImageIdeas(files) {
+    const imgs = [...files].filter((f) => /^image\//.test(f.type));
+    if (!imgs.length) return;
+    toast(imgs.length === 1 ? "Shrinking the image…" : `Shrinking ${imgs.length} images…`);
+    let added = 0;
+    for (const f of imgs) {
+      try {
+        const im = await Images.fromFile(f);
+        newIdea({ imageId: im.id, imageW: im.w, imageH: im.h, title: (f.name && !/^image\.\w+$/i.test(f.name)) ? f.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ") : "" });
+        added++;
+      } catch { /* skip files the browser can't read */ }
+    }
+    toast(added ? `${added} image${added === 1 ? "" : "s"} added to the cabinet.` : "Couldn't read that image.");
+  }
+
+  function ideaToTask(v) {
+    const firstLine = (v.text || "").split("\n").find((l) => l.trim()) || "";
+    const title = (v.title || firstLine || domainOf(v.link) || "An idea from the cabinet").trim().slice(0, 120);
+    const notes = [v.title ? v.text : v.text.split("\n").slice(1).join("\n"), v.link].map((x) => (x || "").trim()).filter(Boolean).join("\n");
+    Store.upsert("tasks", { title, notes, due: "", scope: "personal", clientId: "", done: false, doneAt: "", subtasks: [], ...quadrantFields("") });
+    toast("Added to the Agenda as an unturned card.");
+  }
+
+  function editIdea(idea = {}) {
+    const isNew = !idea.id;
+    openForm({
+      title: isNew ? "New Curiosity" : "Curiosity",
+      values: { ...idea, image: idea.imageId ? { id: idea.imageId, w: idea.imageW, h: idea.imageH } : null, tags: (idea.tags || []).join(", "), ink: idea.ink || "", pinned: idea.pinned ? "yes" : "no", shelf: idea.shelf ?? currentShelf() },
+      fields: [
+        { name: "title", label: "Title", placeholder: "optional", span2: true },
+        { name: "image", label: "Image", type: "image", span2: true },
+        { name: "text", label: "Notes", type: "textarea", placeholder: "the idea, in your own words…", span2: true },
+        { name: "link", label: "Link", type: "url", placeholder: "https://…", span2: true },
+        { name: "shelf", label: "Shelf", placeholder: "e.g. Salon, App ideas", datalist: shelvesInUse() },
+        { name: "tags", label: "Tags", placeholder: "comma separated" },
+        { name: "ink", label: "Ink", type: "segmented", options: INKS.map(([value, label]) => ({ value, label })), span2: true },
+        { name: "pinned", label: "Pinned to the top", type: "segmented", options: [{ value: "no", label: "No" }, { value: "yes", label: "Pinned" }] },
+      ],
+      extra: [{ label: "Make it a task", onClick: (v) => {
+        if (!v.title && !v.text && !v.link) { $("#formError").textContent = "Write something first."; return false; }
+        ideaToTask(v);
+        return true;
+      } }],
+      onSubmit: (v) => {
+        if (!v.title && !v.text && !v.link && !v.image) return "Add a title, a note, a link or an image.";
+        if (v.link && !URL_RE.test(v.link)) v.link = /^[\w-]+(\.[\w-]+)+/.test(v.link) ? `https://${v.link}` : v.link;
+        const im = v.image;
+        const record = {
+          ...idea, title: v.title, text: v.text, link: v.link, shelf: v.shelf, tags: parseTags(v.tags), ink: v.ink, pinned: v.pinned === "yes",
+          imageId: im ? im.id : "", imageW: im ? im.w : 0, imageH: im ? im.h : 0,
+          // a new or removed picture needs a fresh upload; the old copy is cleaned up later
+          imageGist: im && im.id === idea.imageId ? idea.imageGist || "" : "",
+        };
+        if (idea.imageId && (!im || im.id !== idea.imageId)) Images.del(idea.imageId).catch(() => {});
+        Store.upsert("ideas", record);
+        toast(isNew ? "Added to the cabinet." : "Saved.");
+      },
+      onDelete: isNew ? null : () => {
+        if (idea.imageId) Images.del(idea.imageId).catch(() => {});
+        Store.remove("ideas", idea.id);
+        toast("Removed from the cabinet.");
+      },
+    });
+  }
+
+  function ideaCard(i) {
+    const ratio = i.imageW && i.imageH ? `${i.imageW} / ${i.imageH}` : "4 / 3";
+    const text = (i.text || "").trim();
+    return `<article class="scrap ${i.ink ? `ink-${esc(i.ink)}` : ""} ${i.pinned ? "pinned" : ""}" data-idea="${i.id}" tabindex="0" aria-label="${esc(i.title || text.slice(0, 60) || "Image")}">
+      ${i.pinned ? `<span class="pin" title="Pinned">✦</span>` : ""}
+      ${i.imageId ? `<div class="scrap-img" style="aspect-ratio:${ratio}">${imgTag(i.imageId, i.title)}</div>` : ""}
+      ${i.title || text || i.link ? `<div class="scrap-body">
+        ${i.title ? `<h3>${esc(i.title)}</h3>` : ""}
+        ${text ? `<p class="scrap-text">${esc(text)}</p>` : ""}
+        ${i.link ? `<a class="scrap-link" href="${esc(i.link)}" target="_blank" rel="noopener noreferrer">↗ ${esc(domainOf(i.link))}</a>` : ""}
+      </div>` : ""}
+      <div class="scrap-foot">
+        ${i.shelf ? `<span class="tag shelf">${esc(i.shelf)}</span>` : ""}
+        ${(i.tags || []).map((t) => `<span class="hashtag">#${esc(t)}</span>`).join("")}
+        <span class="when">${esc(fmtDate(ymd(new Date(i.createdAt || Date.now())), { month: "short", day: "numeric" }))}</span>
+      </div>
+    </article>`;
+  }
+
+  views.cabinet = {
+    title: "Cabinet",
+    actions: () => `<button class="btn primary" data-act="add-idea">+ Curiosity</button>`,
+    render() {
+      const q = ui.cabinetSearch.toLowerCase();
+      const shelves = shelvesInUse();
+      const hasUnshelved = D().ideas.some((i) => !(i.shelf || "").trim());
+      if (ui.cabinetShelf !== "all" && ui.cabinetShelf !== "none" && !shelves.includes(ui.cabinetShelf)) ui.cabinetShelf = "all";
+      const list = D().ideas
+        .filter((i) => ui.cabinetShelf === "all" || (ui.cabinetShelf === "none" ? !(i.shelf || "").trim() : (i.shelf || "").trim() === ui.cabinetShelf))
+        .filter((i) => !q || [i.title, i.text, i.link, i.shelf, ...(i.tags || [])].some((x) => x && x.toLowerCase().includes(q)))
+        .sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || (b.createdAt || "").localeCompare(a.createdAt || ""));
+      const chip = (v, label, n) => `<button class="shelf-chip ${ui.cabinetShelf === v ? "on" : ""}" data-shelf="${esc(v)}">${esc(label)}<span>${n}</span></button>`;
+      return `
+        <form class="card capture" id="capture" autocomplete="off">
+          <textarea name="text" rows="1" placeholder="Jot down an idea, or paste a link…" aria-label="New idea"></textarea>
+          <div class="capture-actions">
+            <label class="btn ghost" title="Add images">Image<input type="file" accept="image/*" multiple id="captureImages" hidden></label>
+            <button class="btn primary" type="submit">Keep it</button>
+          </div>
+          <p class="capture-hint hide-sm">On a computer you can also paste an image (Ctrl/⌘ V) or drop files anywhere on this page.</p>
+        </form>
+        <div class="toolbar" style="margin-top:16px">
+          <div class="shelves">
+            ${chip("all", "All", D().ideas.length)}
+            ${shelves.map((sh) => chip(sh, sh, D().ideas.filter((i) => (i.shelf || "").trim() === sh).length)).join("")}
+            ${hasUnshelved && shelves.length ? chip("none", "Unshelved", D().ideas.filter((i) => !(i.shelf || "").trim()).length) : ""}
+          </div>
+          <span class="spacer"></span>
+          <input type="search" id="cabinetSearch" placeholder="Search the cabinet…" value="${esc(ui.cabinetSearch)}" style="max-width:240px">
+        </div>
+        ${list.length
+          ? `<div class="board">${list.map(ideaCard).join("")}</div>`
+          : `<div class="card">${empty("✧", D().ideas.length ? "Nothing on this shelf matches." : "The cabinet is empty. Keep ideas, images, links and notes here: for the business, for the future, for this app.")}</div>`}`;
+    },
+    bind(root) {
+      const form = $("#capture", root), ta = $("textarea", form);
+      const grow = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 260) + "px"; };
+      ta.addEventListener("input", grow);
+      // Enter keeps it; Shift+Enter starts a new line
+      ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); } });
+      form.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const text = ta.value.trim();
+        if (!text) return;
+        if (URL_RE.test(text)) newIdea({ link: text, title: domainOf(text) });
+        else newIdea({ text });
+        toast("Kept in the cabinet.");
+        $("#capture textarea").focus();
+      });
+      $("#captureImages", root).addEventListener("change", (e) => addImageIdeas(e.target.files));
+      $$("[data-shelf]", root).forEach((b) => b.addEventListener("click", () => { ui.cabinetShelf = b.dataset.shelf; render(); }));
+      const s = $("#cabinetSearch", root);
+      s.addEventListener("input", () => { ui.cabinetSearch = s.value; render(); const n = $("#cabinetSearch"); n.focus(); n.setSelectionRange(n.value.length, n.value.length); });
+      $$("[data-idea]", root).forEach((card) => {
+        const open = () => editIdea(D().ideas.find((i) => i.id === card.dataset.idea));
+        card.addEventListener("click", (e) => { if (!e.target.closest("a")) open(); });
+        card.addEventListener("keydown", (e) => { if (e.key === "Enter") open(); });
+      });
+    },
+  };
+
+  // paste an image (or a link) anywhere on the Cabinet page
+  document.addEventListener("paste", (e) => {
+    if (currentView() !== "cabinet" || $("#modal").open) return;
+    const files = [...(e.clipboardData?.files || [])].filter((f) => /^image\//.test(f.type));
+    if (files.length) { e.preventDefault(); addImageIdeas(files); return; }
+    const typing = /^(INPUT|TEXTAREA)$/.test(document.activeElement?.tagName);
+    const text = (e.clipboardData?.getData("text") || "").trim();
+    if (!typing && URL_RE.test(text)) { e.preventDefault(); newIdea({ link: text, title: domainOf(text) }); toast("Link kept in the cabinet."); }
+  });
+  // and drop image files onto it
+  document.addEventListener("dragover", (e) => {
+    if (currentView() !== "cabinet" || ![...(e.dataTransfer?.types || [])].includes("Files")) return;
+    e.preventDefault();
+    document.body.classList.add("dropping");
+  });
+  document.addEventListener("dragleave", (e) => { if (!e.relatedTarget) document.body.classList.remove("dropping"); });
+  document.addEventListener("drop", (e) => {
+    document.body.classList.remove("dropping");
+    if (currentView() !== "cabinet" || !e.dataTransfer?.files?.length) return;
+    e.preventDefault();
+    addImageIdeas(e.dataTransfer.files);
+  });
+
   /* ── sync across devices ──────────────────── */
   const TOKEN_URL = "https://github.com/settings/tokens/new?scopes=gist&description=3rd%20Iris%20sync";
 
@@ -1613,7 +1858,7 @@
               <button class="btn ghost" data-act="csv-all">All entries as CSV</button>
               <button class="btn ghost" data-act="import">Import entries</button>
             </div>
-            <p style="color:var(--ash);font-size:15px;margin:0"><i>${D().transactions.length} ledger entries · ${D().appointments.length} appointments · ${D().clients.length} clients · ${D().tasks.length} tasks · ${D().categories.length} categories</i></p>
+            <p style="color:var(--ash);font-size:15px;margin:0"><i>${D().transactions.length} ledger entries · ${D().appointments.length} appointments · ${D().clients.length} clients · ${D().tasks.length} tasks · ${D().ideas.length} curiosities · ${D().categories.length} categories</i></p>
           </div>
           ${syncCard()}
           <div class="card">
@@ -1653,7 +1898,10 @@
         const file = e.target.files[0];
         if (!file) return;
         try {
-          Store.importJSON(await file.text());
+          const text = await file.text();
+          const images = JSON.parse(text).images || {};
+          for (const [id, im] of Object.entries(images)) await Images.put(id, Images.fromBase64(im.data, im.type));
+          Store.importJSON(text);
           toast("Grimoire restored.");
         } catch (err) {
           toast("That file isn't a 3rd Iris backup.");
@@ -1688,6 +1936,7 @@
     "add-client": () => editClient(),
     "add-category": () => editCategory(),
     "add-task": () => editTask({ scope: ui.agendaScope === "business" ? "business" : "personal" }),
+    "add-idea": () => editIdea(),
     "draw-card": () => {
       const current = ui.draw ? ui.draw.cardId : Tarot.cardOfDay(todayStr()).id;
       const card = Tarot.draw(current);
@@ -1708,7 +1957,16 @@
     seed: () => { Store.seedSample(); toast("Sample pages summoned."); },
     "sync-now": () => Sync.syncNow(),
     "sync-off": () => { Sync.disconnect(); toast("Sync is off on this device. Your data stays here."); render(); },
-    export: () => download(`3rd-iris-backup-${todayStr()}.json`, Store.exportJSON(), "application/json"),
+    export: async () => {
+      // images live outside the main data, so they're gathered into the backup separately
+      const backup = JSON.parse(Store.exportJSON());
+      backup.images = {};
+      for (const i of D().ideas.filter((x) => x.imageId)) {
+        const blob = await Images.get(i.imageId).catch(() => null);
+        if (blob) backup.images[i.imageId] = { type: blob.type, data: await Images.toBase64(blob) };
+      }
+      download(`3rd-iris-backup-${todayStr()}.json`, JSON.stringify(backup), "application/json");
+    },
     csv: () => download(`3rd-iris-ledger-${monthKey(ui.ledgerMonth)}.csv`, toCSV(D().transactions.filter((t) => inMonth(t.date, monthKey(ui.ledgerMonth)))), "text/csv"),
     "csv-all": () => download(`3rd-iris-ledger-all.csv`, toCSV(D().transactions), "text/csv"),
     reset: () => openForm({
@@ -1775,6 +2033,7 @@
     const root = $("#view");
     root.innerHTML = v.render();
     v.bind && v.bind(root);
+    hydrateImages(root);
     $$(".nav a").forEach((a) => a.classList.toggle("active", a.dataset.view === name));
     const due = pressingTasks().length, badge = $("#agendaBadge");
     badge.textContent = due;
@@ -1824,6 +2083,16 @@
   if ("serviceWorker" in navigator && window.isSecureContext && location.protocol !== "file:") {
     navigator.serviceWorker.register("sw.js").catch(() => {});
   }
+
+  // pictures arriving from another device fill in where they're shown
+  Images.onChange(() => hydrateImages($("#view")));
+  // images left behind by a cancelled form or a deleted curiosity
+  setTimeout(async () => {
+    try {
+      const used = new Set(D().ideas.map((i) => i.imageId).filter(Boolean));
+      for (const id of await Images.keys()) if (!used.has(id)) await Images.del(id);
+    } catch { /* storage unavailable; nothing to tidy */ }
+  }, 8000);
 
   Store.onChange(render);
   Sync.onChange(() => {

@@ -15,7 +15,7 @@
 
   const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   const now = () => new Date().toISOString();
-  const COLLECTIONS = ["categories", "transactions", "appointments", "clients", "tasks"];
+  const COLLECTIONS = ["categories", "transactions", "appointments", "clients", "tasks", "ideas"];
   // a record's last change; older data without timestamps counts as oldest
   const stamp = (r) => r.updatedAt || r.createdAt || "";
 
@@ -29,6 +29,7 @@
       appointments: [],
       clients: [],
       tasks: [],
+      ideas: [], // the Cabinet: notes, images and links
       deleted: [], // tombstones { c: collection, id, at } so deletions sync too
     };
   }
@@ -55,6 +56,7 @@
       appointments: Array.isArray(d.appointments) ? d.appointments : [],
       clients: Array.isArray(d.clients) ? d.clients : [],
       tasks: Array.isArray(d.tasks) ? d.tasks : [],
+      ideas: Array.isArray(d.ideas) ? d.ideas : [],
       deleted: Array.isArray(d.deleted) ? d.deleted : [],
     };
   }
@@ -227,6 +229,15 @@
       { title: "Invoice Morgana for the styling session", due: iso(-2), important: true, urgent: true, scope: "business", clientId: morgana.id, done: true, doneAt: new Date().toISOString() },
     ].map((t) => ({ notes: "", done: false, doneAt: "", priority: "normal", subtasks: [], important: null, urgent: null, ...t, id: uid(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
     data.tasks.push(...tasks);
+
+    const stamp = new Date().toISOString();
+    const ideas = [
+      { title: "Winter window display", text: "Dried hydrangeas, brass candlesticks, an open atlas.\nAsk the florist on Elm St about bundles.", shelf: "Salon", tags: ["seasonal", "decor"], ink: "gold", pinned: true },
+      { title: "", text: "Offer a 'new moon refresh' gloss + trim, first week of each lunar cycle?", shelf: "Services", tags: ["pricing"], ink: "plum" },
+      { title: "Colour reference", text: "Copper and smoke tones for autumn.", link: "https://en.wikipedia.org/wiki/Copper_(color)", shelf: "Moodboard", tags: ["colour"], ink: "rose" },
+      { title: "App idea", text: "Client formula cards: keep each client's colour formulas with their history.", shelf: "App ideas", tags: [], ink: "" },
+    ].map((x) => ({ link: "", imageId: "", imageW: 0, imageH: 0, imageGist: "", pinned: false, ...x, id: uid(), createdAt: stamp, updatedAt: stamp }));
+    data.ideas.push(...ideas);
     save();
   }
 

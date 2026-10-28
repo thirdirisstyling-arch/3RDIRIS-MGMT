@@ -642,3 +642,73 @@ li.task[draggable=true]:active { cursor: grabbing; }
   .tarot-card .pips .suit-icon { width: 16px; height: 16px; }
   .reading h3 { font-size: 25px; }
 }
+
+/* ── the Cabinet ──────────────────────────── */
+.capture { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; padding: 14px 16px; }
+.capture textarea { flex: 1 1 260px; min-height: 42px; resize: none; line-height: 1.4; }
+.capture-actions { display: flex; gap: 8px; }
+.capture-actions .btn { height: 42px; display: inline-flex; align-items: center; }
+.capture-hint { flex-basis: 100%; margin: 0; font-size: 14px; font-style: italic; color: var(--smoke); }
+
+.shelves { display: flex; flex-wrap: wrap; gap: 6px; }
+.shelf-chip {
+  font: inherit; font-family: var(--font-sc); font-size: 15px; letter-spacing: .04em; cursor: pointer;
+  border: 1px solid var(--line); background: transparent; color: var(--ash); border-radius: 999px; padding: 3px 12px;
+}
+.shelf-chip span { margin-left: 6px; font-family: var(--font-body); font-size: 13px; color: var(--smoke); }
+.shelf-chip:hover { color: var(--gold); border-color: var(--gold-dim); }
+.shelf-chip.on { color: var(--gold); border-color: var(--gold); background: rgba(195, 165, 104, .08); }
+
+.board { columns: 250px; column-gap: 16px; }
+.scrap {
+  --ink: var(--line);
+  position: relative; break-inside: avoid; margin: 0 0 16px; cursor: pointer; overflow: hidden;
+  background: linear-gradient(180deg, var(--vellum-2), var(--vellum));
+  border: 1px solid var(--line-soft); border-top: 2px solid var(--ink); border-radius: var(--radius);
+  box-shadow: var(--shadow); transition: transform .15s, box-shadow .15s, border-color .15s;
+}
+.scrap:hover, .scrap:focus-visible { transform: translateY(-2px); box-shadow: 0 18px 34px -16px rgba(0, 0, 0, .9), 0 0 0 1px var(--ink); outline: none; }
+.scrap.ink-gold { --ink: var(--gold); }
+.scrap.ink-rose { --ink: var(--rose); }
+.scrap.ink-plum { --ink: var(--plum); }
+.scrap.ink-sage { --ink: var(--sage); }
+.scrap.ink-blue { --ink: #7f98a8; }
+.scrap .pin { position: absolute; top: 8px; right: 10px; z-index: 1; color: var(--gold); text-shadow: 0 0 8px rgba(0, 0, 0, .9); }
+.scrap-img { background: #1a161e; overflow: hidden; }
+.scrap-img img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.scrap-img.arriving, .img-preview.arriving { background: linear-gradient(110deg, #1a161e 30%, #27212d 50%, #1a161e 70%); background-size: 200% 100%; animation: shimmer 1.6s linear infinite; }
+@keyframes shimmer { to { background-position: -200% 0; } }
+.scrap-body { padding: 12px 14px 4px; }
+.scrap-body h3 { font-family: var(--font-sc); font-size: 19px; letter-spacing: .03em; color: var(--parchment); margin-bottom: 2px; }
+.scrap-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 17px; display: -webkit-box; -webkit-line-clamp: 12; -webkit-box-orient: vertical; overflow: hidden; }
+.scrap-link { display: inline-block; margin-top: 6px; font-size: 15px; font-style: italic; overflow-wrap: anywhere; }
+.scrap-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 8px 14px 12px; font-size: 13px; color: var(--smoke); }
+.scrap-foot .tag.shelf { font-size: 12px; padding: 0 8px; }
+.scrap-foot .hashtag { color: var(--gold-dim); }
+.scrap-foot .when { margin-left: auto; font-style: italic; }
+
+.img-field .img-preview { min-height: 90px; display: grid; place-items: center; border: 1px dashed var(--line); border-radius: var(--radius); background: var(--ink); color: var(--smoke); font-style: italic; overflow: hidden; }
+.img-field .img-preview img { display: block; max-width: 100%; max-height: 320px; object-fit: contain; }
+
+body.dropping .view::after {
+  content: "Drop to keep in the cabinet ✧"; position: fixed; inset: 16px; z-index: 30; display: grid; place-items: center;
+  border: 2px dashed var(--gold); border-radius: 12px; background: rgba(14, 12, 16, .82);
+  font-family: var(--font-sc); font-size: 24px; letter-spacing: .08em; color: var(--gold); pointer-events: none;
+}
+
+@media (max-width: 600px) {
+  .board { columns: 2 150px; column-gap: 10px; }
+  .scrap { margin-bottom: 10px; }
+  .scrap-body { padding: 10px 10px 2px; }
+  .scrap-body h3 { font-size: 16px; }
+  .scrap-text { font-size: 15px; -webkit-line-clamp: 8; }
+  .scrap-foot { padding: 6px 10px 10px; }
+  .scrap-foot .when { display: none; }
+}
+
+/* long forms scroll in the middle; the title and buttons stay in view */
+.modal[open] { max-height: calc(100dvh - 24px); overflow: hidden; }
+.modal-form { display: flex; flex-direction: column; max-height: calc(100dvh - 26px); }
+.modal-head, .modal-foot { flex: none; }
+.modal-body { overflow-y: auto; overscroll-behavior: contain; min-height: 0; }
+.modal-foot { padding-top: 14px; border-top: 1px solid var(--line-soft); }

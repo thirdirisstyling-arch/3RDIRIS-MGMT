@@ -6,6 +6,8 @@
   const API = "https://api.github.com";
   const GIST_DESC = "3rd Iris Grimoire · encrypted sync";
   const FILE = "grimoire.enc.json";
+  const IMG_DESC = "3rd Iris Grimoire · encrypted image";
+  const IMG_FILE = "image.enc.json";
   const ITERATIONS = 310000;
 
   const loadCfg = () => { try { return JSON.parse(localStorage.getItem(CFG_KEY)) || null; } catch { return null; } };
@@ -18,7 +20,13 @@
 
   /* ── crypto ─────────────────────────────── */
   const enc = new TextEncoder(), dec = new TextDecoder();
-  const b64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
+  // in chunks: spreading a large buffer into a single call exceeds the browser's argument limit
+  const b64 = (buf) => {
+    const bytes = new Uint8Array(buf);
+    let s = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(s);
+  };
   const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
   const keyCache = new Map();
 
@@ -81,20 +89,23 @@
 
   /* every sync copy on the account, oldest first. Normally one; two devices that connected
      before either could see the other's copy each made their own, and those get folded together. */
-  async function findGists(token) {
+  async function listGists(token) {
     const out = [];
-    for (let page = 1; page <= 10; page++) {
+    for (let page = 1; page <= 30; page++) {
       const list = await api(`/gists?per_page=100&page=${page}`, { token });
-      out.push(...list.filter((g) => g.description === GIST_DESC && g.files && g.files[FILE]));
+      out.push(...list);
       if (list.length < 100) break;
     }
-    return out.sort((a, b) => (a.created_at || "").localeCompare(b.created_at || "") || a.id.localeCompare(b.id));
+    return out;
   }
+  const byAge = (a, b) => (a.created_at || "").localeCompare(b.created_at || "") || a.id.localeCompare(b.id);
+  const mainGists = (all) => all.filter((g) => g.description === GIST_DESC && g.files && g.files[FILE]).sort(byAge);
+  const findGists = async (token) => mainGists(await listGists(token));
   const findGist = async (token) => ((await findGists(token))[0] || {}).id || null;
 
-  async function readGist(id, token) {
+  async function readGist(id, token, file = FILE) {
     const g = await api(`/gists/${id}`, { token });
-    const f = g.files && g.files[FILE];
+    const f = g.files && g.files[file];
     if (!f) throw new SyncError("The sync gist is missing its data file. Reconnect to set it up again.", "missing");
     let content = f.content;
     if (f.truncated) {
@@ -118,7 +129,12 @@
   /* settle on the oldest sync copy, folding any others into this device's data */
   async function consolidate() {
     lastScan = Date.now();
-    const all = await findGists(cfg.token);
+    const everything = await listGists(cfg.token);
+    const all = mainGists(everything);
+    // image copies more than an hour old; any no record refers to once merged get removed.
+    // The hour spares an image another device has just uploaded but not yet referenced.
+    const hourAgo = new Date(Date.now() - 3600000).toISOString();
+    const oldImages = everything.filter((g) => g.description === IMG_DESC && (g.created_at || "") < hourAgo).map((g) => g.id);
     // GitHub's list can lag behind a copy made moments ago; ask for this device's copy directly
     if (cfg.gistId && !all.some((g) => g.id === cfg.gistId)) {
       const own = await api(`/gists/${cfg.gistId}`).catch((e) => { if (e.kind === "missing") return null; throw e; });
@@ -132,7 +148,7 @@
       const g = await api("/gists", { method: "POST", body: { description: GIST_DESC, public: false, files: { [FILE]: { content: JSON.stringify(await encrypt(Store.data, cfg.passphrase)) } } } });
       cfg.gistId = g.id;
       saveCfg(cfg);
-      return { extras: [], locked: 0 };
+      return { extras: [], locked: 0, oldImages: [] };
     }
     const extras = [];
     let locked = 0;
@@ -147,10 +163,32 @@
       }
     }
     if (cfg.gistId !== all[0].id) { cfg.gistId = all[0].id; saveCfg(cfg); }
-    return { extras, locked };
+    return { extras, locked, oldImages };
   }
 
-  const summarize = (d) => ({ tx: d.transactions.length, tasks: d.tasks.length, clients: d.clients.length, appts: d.appointments.length });
+  const summarize = (d) => ({ tx: d.transactions.length, tasks: d.tasks.length, clients: d.clients.length, appts: d.appointments.length, ideas: (d.ideas || []).length });
+
+  /* images travel separately: one small encrypted gist each, uploaded once by the device that has
+     it and fetched once by each device that doesn't, so the main sync stays light */
+  async function syncImages(salt) {
+    if (!window.Images) return;
+    for (const it of Store.data.ideas || []) {
+      if (!it.imageId) continue;
+      if (!it.imageGist) {
+        const blob = await Images.get(it.imageId);
+        if (!blob) continue;
+        const payload = await encrypt({ type: blob.type, data: await Images.toBase64(blob) }, cfg.passphrase, salt);
+        const g = await api("/gists", { method: "POST", body: { description: IMG_DESC, public: false, files: { [IMG_FILE]: { content: JSON.stringify(payload) } } } });
+        // saving the reference schedules a follow-up sync that shares it
+        Store.upsert("ideas", { id: it.id, imageGist: g.id });
+      } else if (!(await Images.has(it.imageId))) {
+        const payload = await readGist(it.imageGist, cfg.token, IMG_FILE).catch((e) => { if (e.kind === "missing") return null; throw e; });
+        if (!payload) continue;
+        const img = await decrypt(payload, cfg.passphrase);
+        await Images.put(it.imageId, Images.fromBase64(img.data, img.type));
+      }
+    }
+  }
 
   async function syncNow({ rescan = false } = {}) {
     if (!cfg) return;
@@ -175,7 +213,13 @@
           await writeGist(cfg.gistId, await encrypt(Store.data, cfg.passphrase, remotePayload.salt));
         }
         // extra copies are only removed once their contents are safely in the main one
-        if (scan) for (const id of scan.extras) await api(`/gists/${id}`, { method: "DELETE" }).catch(() => {});
+        if (scan) {
+          // decided only now, after merging, so a reference from another device is never missed
+          const referenced = new Set((Store.data.ideas || []).map((i) => i.imageGist).filter(Boolean));
+          const stale = scan.oldImages.filter((id) => !referenced.has(id));
+          for (const id of [...scan.extras, ...stale]) await api(`/gists/${id}`, { method: "DELETE" }).catch(() => {});
+        }
+        await syncImages(remotePayload.salt);
         cfg.lastSync = new Date().toISOString();
         saveCfg(cfg);
         setState({
@@ -197,7 +241,7 @@
     const sortKeys = (v) => Array.isArray(v) ? v.map(sortKeys)
       : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sortKeys(v[k])])) : v;
     const copy = JSON.parse(JSON.stringify(d));
-    ["categories", "transactions", "appointments", "clients", "tasks"].forEach((c) => (copy[c] || []).sort((a, b) => String(a.id).localeCompare(String(b.id))));
+    ["categories", "transactions", "appointments", "clients", "tasks", "ideas"].forEach((c) => (copy[c] || []).sort((a, b) => String(a.id).localeCompare(String(b.id))));
     (copy.deleted || []).sort((a, b) => `${a.c}|${a.id}`.localeCompare(`${b.c}|${b.id}`));
     return JSON.stringify(sortKeys(copy));
   }
