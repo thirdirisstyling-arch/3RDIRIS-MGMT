@@ -212,15 +212,20 @@
     ].map((a) => ({ ...a, id: uid(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
     data.appointments.push(...appts);
 
+    const step = (title, done = false) => ({ id: uid(), title, done });
     const tasks = [
-      { title: "Send Elias the shoot moodboard", due: iso(0), priority: "high", scope: "business", clientId: elias.id },
-      { title: "Reorder foils & developer", due: iso(1), priority: "normal", scope: "business", clientId: "" },
-      { title: "Follow up with Wren about the Samhain date", due: iso(-1), priority: "high", scope: "business", clientId: wren.id },
-      { title: "Return library books", due: iso(4), priority: "low", scope: "personal", clientId: "" },
-      { title: "Update portfolio with autumn work", due: "", priority: "normal", scope: "business", clientId: "" },
-      { title: "Repot the moonflower", due: "", priority: "low", scope: "personal", clientId: "" },
-      { title: "Invoice Morgana for the styling session", due: iso(-2), priority: "normal", scope: "business", clientId: morgana.id, done: true, doneAt: new Date().toISOString() },
-    ].map((t) => ({ notes: "", done: false, doneAt: "", ...t, id: uid(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
+      { title: "Send Elias the shoot moodboard", due: iso(0), important: true, urgent: true, scope: "business", clientId: elias.id,
+        subtasks: [step("Pull candlelit references", true), step("Pick three colour palettes", true), step("Export as PDF")] },
+      { title: "Reorder foils & developer", due: iso(1), important: false, urgent: true, scope: "business", clientId: "" },
+      { title: "Follow up with Wren about the Samhain date", due: iso(-1), important: true, urgent: true, scope: "business", clientId: wren.id },
+      { title: "Return library books", due: iso(4), important: false, urgent: false, scope: "personal", clientId: "" },
+      { title: "Update portfolio with autumn work", due: "", important: true, urgent: false, scope: "business", clientId: "",
+        subtasks: [step("Choose ten best images"), step("Write short captions"), step("Upload to the site")] },
+      { title: "Plan the winter price list", due: iso(12), important: true, urgent: false, scope: "business", clientId: "" },
+      { title: "Repot the moonflower", due: "", important: false, urgent: false, scope: "personal", clientId: "" },
+      { title: "Look into a second booking app", due: "", scope: "business", clientId: "" },
+      { title: "Invoice Morgana for the styling session", due: iso(-2), important: true, urgent: true, scope: "business", clientId: morgana.id, done: true, doneAt: new Date().toISOString() },
+    ].map((t) => ({ notes: "", done: false, doneAt: "", priority: "normal", subtasks: [], important: null, urgent: null, ...t, id: uid(), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
     data.tasks.push(...tasks);
     save();
   }

@@ -236,6 +236,12 @@
     if (f.type === "textarea") {
       return `<label class="${cls}">${esc(f.label)}<textarea name="${f.name}" ${ph}>${esc(v)}</textarea></label>`;
     }
+    if (f.type === "steps") {
+      const rows = (Array.isArray(v) ? v : []).map(stepRowHTML).join("");
+      return `<div class="${cls}"><label class="field">${esc(f.label)}</label><div class="steps-edit" data-steps="${f.name}">${rows}</div>
+        <button type="button" class="btn ghost sm" data-add-step>+ Add a step</button></div>`;
+    }
+    if (f.type === "note") return `<p class="form-hint" id="${f.name}"></p>`;
     const extra = f.type === "number" ? `step="${f.step || "0.01"}" min="${f.min ?? 0}" inputmode="decimal"` : "";
     return `<label class="${cls}">${esc(f.label)}<input type="${f.type || "text"}" name="${f.name}" value="${esc(v)}" ${ph} ${req} ${extra}></label>`;
   }
@@ -290,9 +296,22 @@
     if (first) first.focus();
   }
 
+  const stepRowHTML = (st = {}) => `<div class="step-row" data-step-id="${esc(st.id || "")}">
+    <input type="checkbox" ${st.done ? "checked" : ""} aria-label="Step done">
+    <input type="text" value="${esc(st.title || "")}" placeholder="A step…" aria-label="Step">
+    <button type="button" class="icon-btn" data-remove-step aria-label="Remove step">✕</button></div>`;
+
   function collect(fields) {
     const out = {};
     fields.forEach((f) => {
+      if (f.type === "steps") {
+        out[f.name] = $$(".step-row", modal).map((row) => ({
+          id: row.dataset.stepId || Store.uid(),
+          title: $("input[type=text]", row).value.trim(),
+          done: $("input[type=checkbox]", row).checked,
+        })).filter((st) => st.title);
+        return;
+      }
       const el = $(`[name="${f.name}"]`, modal);
       if (!el) return;
       out[f.name] = f.type === "number" ? (el.value === "" ? "" : parseFloat(el.value)) : el.value.trim();
@@ -300,11 +319,27 @@
     return out;
   }
 
+  modal.addEventListener("keydown", (e) => {
+    const row = e.target.closest(".step-row");
+    if (!row || e.key !== "Enter" || e.target.type !== "text") return;
+    e.preventDefault();
+    if (!e.target.value.trim()) return;
+    row.insertAdjacentHTML("afterend", stepRowHTML());
+    $("input[type=text]", row.nextElementSibling).focus();
+  });
+
   $("#modalForm").addEventListener("submit", (e) => {
     e.preventDefault();
     if (modalSubmit && modalSubmit()) modal.close();
   });
   modal.addEventListener("click", (e) => {
+    if (e.target.closest("[data-add-step]")) {
+      const list = $(".steps-edit", modal);
+      list.insertAdjacentHTML("beforeend", stepRowHTML());
+      $(".step-row:last-child input[type=text]", list).focus();
+      return;
+    }
+    if (e.target.closest("[data-remove-step]")) { e.target.closest(".step-row").remove(); return; }
     if (e.target.closest("[data-close]")) modal.close();
     else if (e.target === modal) modal.close(); // backdrop click
   });
@@ -407,23 +442,108 @@
     });
   }
 
-  const PRIORITIES = [["high", "High"], ["normal", "Normal"], ["low", "Low"]];
+  /* ── tasks: the four arcana (an Eisenhower matrix) ── */
+  const ARCANA = {
+    q1: { num: "I", name: "The Tower", glyph: "♜", axes: "Urgent & important", action: "Do it now" },
+    q2: { num: "II", name: "The Star", glyph: "✶", axes: "Important, not urgent", action: "Make time for it" },
+    q3: { num: "III", name: "The Magician", glyph: "∞", axes: "Urgent, not important", action: "Batch it, automate it or hand it off" },
+    q4: { num: "IV", name: "The Moon", glyph: "☾", axes: "Neither urgent nor important", action: "Let it fade, or do it last" },
+  };
+  const UNTURNED = { num: "", name: "Unturned cards", glyph: "✧", axes: "Not yet placed", action: "Decide how much it matters" };
+  const arcanaOf = (q) => ARCANA[q] || UNTURNED;
+  const URGENT_WITHIN = 2; // days; anything due this soon is urgent whatever was chosen
+
+  // importance is the person's call; older tasks fall back on the priority they were given
+  function isImportant(t) {
+    if (t.important === true || t.important === false) return t.important;
+    return t.priority === "high" ? true : t.priority === "low" ? false : undefined;
+  }
+  const dueSoon = (t) => !t.done && !!t.due && t.due <= stepDays(todayStr(), URGENT_WITHIN);
+  const isUrgent = (t) => t.urgent === true || dueSoon(t);
+
+  /* the arcana a task sits in now: q1–q4, or "" while its importance is undecided */
+  function quadrantOf(t) {
+    const i = isImportant(t);
+    if (i === undefined) return "";
+    return i ? (isUrgent(t) ? "q1" : "q2") : isUrgent(t) ? "q3" : "q4";
+  }
+  /* the arcana as chosen, before deadlines pull it into urgency */
+  function chosenQuadrant(t) {
+    const i = isImportant(t);
+    if (i === undefined) return "";
+    return i ? (t.urgent === true ? "q1" : "q2") : t.urgent === true ? "q3" : "q4";
+  }
+  const QUADRANT_FIELDS = {
+    q1: { important: true, urgent: true }, q2: { important: true, urgent: false },
+    q3: { important: false, urgent: true }, q4: { important: false, urgent: false },
+    "": { important: null, urgent: null },
+  };
+  // priority is superseded once an arcana is chosen
+  const quadrantFields = (q) => ({ ...QUADRANT_FIELDS[q || ""], priority: "normal" });
+
+  /* suggested order: the Tower first, then the Star, the Magician, the Moon; sooner deadlines and
+     work already begun go first within each. Undecided tasks wait after the Magician unless due soon. */
+  function suggestRank(t) {
+    const q = quadrantOf(t);
+    return { q1: 0, q2: 1, q3: 2, q4: 3 }[q] ?? (dueSoon(t) ? 0.5 : 2.5);
+  }
+  const progressOf = (t) => {
+    const st = t.subtasks || [];
+    return st.length ? st.filter((x) => x.done).length / st.length : 0;
+  };
+  const bySuggested = (a, b) =>
+    suggestRank(a) - suggestRank(b) ||
+    (a.due || "9999").localeCompare(b.due || "9999") ||
+    progressOf(b) - progressOf(a) ||
+    (a.createdAt || "").localeCompare(b.createdAt || "");
+
+  function suggestReason(t) {
+    const q = quadrantOf(t), today = todayStr();
+    const when = !t.due ? "" : t.due < today ? "overdue" : t.due === today ? "due today" : relDay(t.due) === "tomorrow" ? "due tomorrow" : `due ${fmtDate(t.due, { month: "short", day: "numeric" })}`;
+    const st = t.subtasks || [];
+    const started = st.some((x) => x.done) && st.some((x) => !x.done) ? `${st.filter((x) => x.done).length} of ${st.length} steps done` : "";
+    const why = {
+      q1: "urgent and important",
+      q2: t.due ? "important; get ahead of it" : "important, with no deadline to force it: make time before it becomes urgent",
+      q3: "urgent but minor: a quick win, or hand it off",
+      q4: "only once the rest is handled",
+      "": dueSoon(t) ? "due soon: decide how much it matters" : "unplaced: decide how much it matters",
+    }[q];
+    return [arcanaOf(q).name, when, started, why].filter(Boolean).join(" · ");
+  }
+
+  const openTasks = () => D().tasks.filter((t) => !t.done);
+  // what needs attention today: anything due by today, and everything in the Tower
+  const pressingTasks = () => openTasks().filter((t) => (t.due && t.due <= todayStr()) || quadrantOf(t) === "q1").sort(bySuggested);
 
   function editTask(task = {}) {
     const isNew = !task.id;
+    const arcanaOptions = [["", "✧ Unturned · not yet placed"], ...Object.entries(ARCANA).map(([q, a]) => [q, `${a.glyph} ${a.num} · ${a.name} · ${a.axes.toLowerCase()}`])];
     openForm({
       title: isNew ? "New Task" : "Amend Task",
-      values: { priority: "normal", scope: "personal", ...task },
+      values: { scope: "personal", ...task, arcana: task.arcana ?? chosenQuadrant(task), subtasks: task.subtasks || [] },
       fields: [
         { name: "title", label: "What needs doing", required: true, placeholder: "e.g. send the invoice", span2: true },
+        { name: "arcana", label: "Arcana", type: "select", options: arcanaOptions.map(([value, label]) => ({ value, label })), span2: true },
+        { name: "arcanaHint", type: "note" },
         { name: "due", label: "Due", type: "date" },
-        { name: "priority", label: "Priority", type: "select", options: PRIORITIES.map(([value, label]) => ({ value, label })) },
-        { name: "scope", label: "Purse", type: "segmented", options: [{ value: "personal", label: "Personal" }, { value: "business", label: "Business" }] },
         { name: "clientId", label: "Client", type: "select", options: clientOptions() },
+        { name: "scope", label: "Purse", type: "segmented", options: [{ value: "personal", label: "Personal" }, { value: "business", label: "Business" }], span2: true },
+        { name: "subtasks", label: "Steps", type: "steps", span2: true },
         { name: "notes", label: "Notes", type: "textarea", span2: true },
       ],
+      onChange: (v, root) => {
+        const hint = $("#arcanaHint", root);
+        const lands = quadrantOf({ ...quadrantFields(v.arcana), due: v.due });
+        const a = arcanaOf(v.arcana);
+        hint.innerHTML = v.arcana !== lands
+          ? `Due within ${URGENT_WITHIN} days, so it sits in <b>${esc(arcanaOf(lands).name)}</b> until it's done.`
+          : `<b>${esc(a.action)}.</b> Anything due within ${URGENT_WITHIN} days counts as urgent.`;
+      },
       onSubmit: (v) => {
-        Store.upsert("tasks", { done: false, doneAt: "", ...task, ...v });
+        const { arcana, arcanaHint, ...rest } = v;
+        const { arcana: _preset, ...base } = task;
+        Store.upsert("tasks", { done: false, doneAt: "", ...base, ...rest, ...quadrantFields(arcana) });
         toast(isNew ? "Added to the agenda." : "Task amended.");
       },
       onDelete: isNew ? null : () => { Store.remove("tasks", task.id); toast("Task banished."); },
@@ -437,20 +557,63 @@
     toast(t.done ? "Back on the agenda." : "Done. ✦");
   }
 
-  /* open tasks, soonest first: by due date (undated last), then priority, then when added */
-  const PRIORITY_RANK = { high: 0, normal: 1, low: 2 };
-  const byTaskOrder = (a, b) => (a.due || "9999").localeCompare(b.due || "9999") || (PRIORITY_RANK[a.priority] ?? 1) - (PRIORITY_RANK[b.priority] ?? 1) || (a.createdAt || "").localeCompare(b.createdAt || "");
-  const pressingTasks = () => D().tasks.filter((t) => !t.done && t.due && t.due <= todayStr()).sort(byTaskOrder);
+  /* steps (subtasks) live inside their task, so they sync with it */
+  function updateSteps(taskId, fn) {
+    const t = D().tasks.find((x) => x.id === taskId);
+    if (!t) return null;
+    const subtasks = fn((t.subtasks || []).map((st) => ({ ...st })));
+    Store.upsert("tasks", { id: taskId, subtasks });
+    return subtasks;
+  }
+  function toggleStep(taskId, stepId) {
+    const after = updateSteps(taskId, (list) => list.map((st) => (st.id === stepId ? { ...st, done: !st.done } : st)));
+    if (after && after.length && after.every((st) => st.done) && after.find((st) => st.id === stepId).done) toast("Every step done. Tick off the task? ✦");
+  }
+  function addStep(taskId, title) {
+    title = title.trim();
+    if (!title) return;
+    ui.expandedTasks.add(taskId);
+    updateSteps(taskId, (list) => [...list, { id: Store.uid(), title, done: false }]);
+  }
+  const removeStep = (taskId, stepId) => updateSteps(taskId, (list) => list.filter((st) => st.id !== stepId));
 
-  function taskLi(t) {
+  function setQuadrant(taskId, q) {
+    const t = D().tasks.find((x) => x.id === taskId);
+    if (!t) return;
+    Store.upsert("tasks", { id: taskId, ...quadrantFields(q) });
+    const lands = quadrantOf(D().tasks.find((x) => x.id === taskId));
+    toast(lands !== q && q ? `Due within ${URGENT_WITHIN} days, so it stays urgent. Change the due date to move it.` : `Moved to ${arcanaOf(q).name}.`);
+  }
+
+  function taskLi(t, { showArcana = true, reason = "" } = {}) {
     const cl = clientById(t.clientId);
     const today = todayStr();
+    const q = quadrantOf(t), a = arcanaOf(q);
     const when = t.done ? (t.doneAt ? `done ${esc(fmtDate(ymd(new Date(t.doneAt)), { month: "short", day: "numeric" }))}` : "done") : !t.due ? "" : t.due < today ? `<span class="neg">overdue · ${esc(fmtDate(t.due, { month: "short", day: "numeric" }))}</span>` : t.due === today ? `<span class="gold">today</span>` : esc(relDay(t.due) === "tomorrow" ? "tomorrow" : fmtDate(t.due));
-    const meta = [when, cl ? esc(cl.name) : "", t.notes ? `<i>${esc(t.notes.length > 70 ? t.notes.slice(0, 70) + "…" : t.notes)}</i>` : ""].filter(Boolean).join(" · ");
-    return `<li class="task ${t.done ? "done" : ""} prio-${esc(t.priority || "normal")}" data-task="${t.id}">
+    const meta = reason
+      ? `<i>${esc(reason)}</i>`
+      : [when, cl ? esc(cl.name) : "", t.notes ? `<i>${esc(t.notes.length > 70 ? t.notes.slice(0, 70) + "…" : t.notes)}</i>` : ""].filter(Boolean).join(" · ");
+    const steps = t.subtasks || [];
+    const doneSteps = steps.filter((st) => st.done).length;
+    const open = ui.expandedTasks.has(t.id);
+    const arcanaTag = showArcana && !t.done ? `<span class="arcana-tag ${q || "unturned"}" title="${esc(a.name)}: ${esc(a.axes.toLowerCase())}">${a.glyph}<span class="hide-sm"> ${esc(a.name.replace(/^The /, ""))}</span></span>` : "";
+    return `<li class="task ${t.done ? "done" : ""}" data-task="${t.id}" draggable="${t.done ? "false" : "true"}">
       <button class="check-btn" data-toggle-task="${t.id}" role="checkbox" aria-checked="${t.done ? "true" : "false"}" aria-label="${t.done ? "Mark not done" : "Mark done"}: ${esc(t.title)}"><span>✦</span></button>
-      <div class="grow"><span class="title">${t.priority === "high" ? `<span class="prio" title="High priority">❖</span> ` : ""}${esc(t.title)}</span>${meta ? `<span class="meta">${meta}</span>` : ""}</div>
-      <span class="tag ${t.scope === "business" ? "biz" : ""} hide-sm">${esc(t.scope || "personal")}</span>
+      <div class="grow">
+        <span class="title">${esc(t.title)}</span>${meta ? `<span class="meta">${meta}</span>` : ""}
+        ${open ? `<ul class="steps-list">
+            ${steps.map((st) => `<li class="${st.done ? "done" : ""}">
+              <button class="check-btn sm" data-toggle-step="${t.id}:${st.id}" role="checkbox" aria-checked="${st.done}" aria-label="${st.done ? "Mark not done" : "Mark done"}: ${esc(st.title)}"><span>✦</span></button>
+              <span class="step-title">${esc(st.title)}</span>
+              <button class="step-x" data-remove-step-inline="${t.id}:${st.id}" aria-label="Remove step ${esc(st.title)}">✕</button></li>`).join("")}
+            <li class="add"><input data-add-step-inline="${t.id}" placeholder="Add a step and press Enter…" aria-label="New step for ${esc(t.title)}"></li>
+          </ul>` : ""}
+      </div>
+      <div class="task-side">
+        ${arcanaTag}
+        <button class="steps-chip ${steps.length && doneSteps === steps.length ? "all" : ""}" data-expand-task="${t.id}" aria-expanded="${open}" ${steps.length ? "" : 'aria-label="Add steps"'} title="${open ? "Hide steps" : steps.length ? "Show steps" : "Add steps"}">${steps.length ? `${doneSteps}/${steps.length} <span aria-hidden="true">${open ? "▴" : "▾"}</span><span class="sr">steps</span>` : `+<span class="hide-sm"> steps</span>`}</button>
+        ${showArcana ? `<span class="tag ${t.scope === "business" ? "biz" : ""} hide-sm">${esc(t.scope || "personal")}</span>` : ""}
+      </div>
     </li>`;
   }
 
@@ -695,6 +858,8 @@
     codexSearch: "",
     agendaScope: "all",
     agendaShowDone: prefs.agendaShowDone === true,
+    agendaView: prefs.agendaView === "list" ? "list" : "matrix",
+    expandedTasks: new Set(),
   };
 
   const views = {};
@@ -766,7 +931,7 @@
               ${(() => {
                 const list = pressingTasks();
                 return list.length
-                  ? `<ul class="list tasks">${list.slice(0, 6).map(taskLi).join("")}</ul>${list.length > 6 ? `<p class="more-link"><a href="#agenda">${list.length - 6} more due</a></p>` : ""}`
+                  ? `<ul class="list tasks">${list.slice(0, 6).map((t) => taskLi(t)).join("")}</ul>${list.length > 6 ? `<p class="more-link"><a href="#agenda">${list.length - 6} more</a></p>` : ""}`
                   : empty("☑", D().tasks.some((t) => !t.done) ? "Nothing due today." : "No tasks yet. Add one in the Agenda.");
               })()}
             </div>
@@ -1017,7 +1182,7 @@
       const b = e.target.closest("button");
       if (!b) return;
       ui[seg.dataset.ui] = b.dataset.value;
-      if (seg.dataset.ui === "ledgerView") { prefs.ledgerView = b.dataset.value; savePrefs(); }
+      if (seg.dataset.ui === "ledgerView" || seg.dataset.ui === "agendaView") { prefs[seg.dataset.ui] = b.dataset.value; savePrefs(); }
       render();
     }));
   }
@@ -1191,43 +1356,43 @@
     render() {
       const today = todayStr(), week = stepDays(today, 7);
       const all = D().tasks.filter((t) => ui.agendaScope === "all" || (t.scope || "personal") === ui.agendaScope);
-      const open = all.filter((t) => !t.done).sort(byTaskOrder);
+      const open = all.filter((t) => !t.done).sort(bySuggested);
       const done = all.filter((t) => t.done).sort((a, b) => (b.doneAt || "").localeCompare(a.doneAt || ""));
-      const groups = [
-        ["Overdue", "neg", open.filter((t) => t.due && t.due < today)],
-        ["Today", "gold", open.filter((t) => t.due === today)],
-        ["This week", "", open.filter((t) => t.due > today && t.due <= week)],
-        ["Later", "", open.filter((t) => t.due > week)],
-        ["Someday", "", open.filter((t) => !t.due)],
-      ].filter(([, , list]) => list.length);
       const doneThisWeek = D().tasks.filter((t) => t.done && t.doneAt && t.doneAt.slice(0, 10) > stepDays(today, -7)).length;
-      const seg = `<div class="segmented" data-ui="agendaScope">${[["all", "All"], ["personal", "Personal"], ["business", "Business"]].map(([v, l]) => `<button class="${ui.agendaScope === v ? "on" : ""}" data-value="${v}">${l}</button>`).join("")}</div>`;
+      const seg = (name, cur, opts) => `<div class="segmented" data-ui="${name}">${opts.map(([v, l]) => `<button class="${cur === v ? "on" : ""}" data-value="${v}">${l}</button>`).join("")}</div>`;
+      const next = open.slice(0, 3);
+
       return `
         <form class="card quick-add" id="quickAdd" autocomplete="off">
           <input name="title" placeholder="Add a task and press Enter…" aria-label="New task" required>
           <input name="due" type="date" aria-label="Due date" title="Due date (optional)">
-          <select name="priority" aria-label="Priority">${PRIORITIES.map(([v, l]) => `<option value="${v}" ${v === "normal" ? "selected" : ""}>${l}</option>`).join("")}</select>
+          <select name="arcana" aria-label="Arcana">
+            <option value="">✧ Unturned</option>
+            ${Object.entries(ARCANA).map(([q, a]) => `<option value="${q}">${a.glyph} ${a.name}</option>`).join("")}
+          </select>
           <button class="btn primary" type="submit">Add</button>
         </form>
         <div class="toolbar" style="margin-top:16px">
-          ${seg}
+          ${seg("agendaView", ui.agendaView, [["matrix", "Arcana"], ["list", "By date"]])}
+          ${seg("agendaScope", ui.agendaScope, [["all", "All"], ["personal", "Personal"], ["business", "Business"]])}
           <span class="spacer"></span>
           <label class="check"><input type="checkbox" id="agendaShowDone" ${ui.agendaShowDone ? "checked" : ""}> Show finished</label>
         </div>
         <div class="grid cols-4 stats" style="margin-bottom:18px">
           <div class="card stat"><div class="label">Open</div><div class="value">${open.length}</div></div>
-          <div class="card stat"><div class="label">Due today</div><div class="value gold">${open.filter((t) => t.due === today).length}</div></div>
+          <div class="card stat"><div class="label">In the Tower</div><div class="value ${open.some((t) => quadrantOf(t) === "q1") ? "neg" : ""}">${open.filter((t) => quadrantOf(t) === "q1").length}</div></div>
           <div class="card stat"><div class="label">Overdue</div><div class="value ${open.some((t) => t.due && t.due < today) ? "neg" : ""}">${open.filter((t) => t.due && t.due < today).length}</div></div>
           <div class="card stat"><div class="label">Done this week</div><div class="value pos">${doneThisWeek}</div></div>
         </div>
-        ${groups.length ? `<div class="grid">${groups.map(([label, cls, list]) => `
-          <div class="card">
-            <div class="card-head"><h2 class="${cls}">${label}</h2><small>${list.length}</small></div>
-            <ul class="list tasks">${list.map(taskLi).join("")}</ul>
-          </div>`).join("")}</div>` : `<div class="card">${empty("☑", all.length ? "Everything's done. Rest a while." : "No tasks yet. Add one above.")}</div>`}
+        ${next.length ? `<div class="card next-up">
+          <div class="card-head"><h2>Next up</h2><small>suggested order</small></div>
+          <ol class="list tasks numbered">${next.map((t) => taskLi(t, { reason: suggestReason(t) })).join("")}</ol>
+        </div>` : ""}
+        ${!open.length ? `<div class="card">${empty("☑", all.length ? "Everything's done. Rest a while." : "No tasks yet. Add one above.")}</div>`
+          : ui.agendaView === "list" ? agendaByDate(open, today, week) : agendaMatrix(open)}
         ${ui.agendaShowDone && done.length ? `<div class="card" style="margin-top:18px">
           <div class="card-head"><h2>Finished</h2><small>${done.length}</small></div>
-          <ul class="list tasks">${done.slice(0, 50).map(taskLi).join("")}</ul>
+          <ul class="list tasks">${done.slice(0, 50).map((t) => taskLi(t)).join("")}</ul>
           ${done.length > 50 ? `<p class="more-link">and ${done.length - 50} older</p>` : ""}
         </div>` : ""}`;
     },
@@ -1240,14 +1405,67 @@
         const title = String(f.get("title") || "").trim();
         if (!title) return;
         Store.upsert("tasks", {
-          title, due: f.get("due") || "", priority: f.get("priority") || "normal",
-          scope: ui.agendaScope === "business" ? "business" : "personal", clientId: "", notes: "", done: false, doneAt: "",
+          title, due: f.get("due") || "", scope: ui.agendaScope === "business" ? "business" : "personal",
+          clientId: "", notes: "", done: false, doneAt: "", subtasks: [], ...quadrantFields(f.get("arcana") || ""),
         });
         toast("Added to the agenda.");
         $("#quickAdd input[name=title]").focus();
       });
+      // drag a task onto another arcana to move it (pointer devices; on touch, use the form)
+      $$("[data-quadrant]", root).forEach((zone) => {
+        zone.addEventListener("dragover", (e) => { e.preventDefault(); zone.classList.add("drop"); });
+        zone.addEventListener("dragleave", (e) => { if (!zone.contains(e.relatedTarget)) zone.classList.remove("drop"); });
+        zone.addEventListener("drop", (e) => {
+          e.preventDefault();
+          zone.classList.remove("drop");
+          const id = e.dataTransfer.getData("text/x-task");
+          if (id) setQuadrant(id, zone.dataset.quadrant);
+        });
+      });
+      $$("li.task[draggable=true]", root).forEach((li) => li.addEventListener("dragstart", (e) => {
+        e.dataTransfer.setData("text/x-task", li.dataset.task);
+        e.dataTransfer.effectAllowed = "move";
+      }));
     },
   };
+
+  function agendaMatrix(open) {
+    const by = { q1: [], q2: [], q3: [], q4: [], "": [] };
+    open.forEach((t) => by[quadrantOf(t)].push(t));
+    const cell = (q) => {
+      const a = arcanaOf(q), list = by[q];
+      return `<section class="card arcana ${q || "unturned"}" data-quadrant="${q}" aria-label="${esc(a.name)}: ${esc(a.axes)}">
+        <header class="arcana-head">
+          <span class="arcana-glyph" aria-hidden="true">${a.glyph}</span>
+          <div class="grow"><h2>${a.num ? `<span class="num">${a.num}</span> ` : ""}${esc(a.name)}</h2><small>${esc(a.axes)} · <i>${esc(a.action.toLowerCase())}</i></small></div>
+          <span class="count">${list.length}</span>
+          <button class="icon-btn add-to" data-add-task-q="${q}" aria-label="Add a task to ${esc(a.name)}">+</button>
+        </header>
+        ${list.length ? `<ul class="list tasks">${list.map((t) => taskLi(t, { showArcana: false })).join("")}</ul>` : `<p class="arcana-empty">${q === "q1" ? "Nothing burning. ✦" : "Empty. Drag a task here."}</p>`}
+      </section>`;
+    };
+    return `${by[""].length ? cell("") : ""}
+      <div class="matrix">
+        <div class="axis top hide-sm"><span>Urgent</span><span>Not urgent</span></div>
+        <div class="axis side hide-sm"><span>Important</span><span>Not important</span></div>
+        <div class="matrix-grid">${cell("q1")}${cell("q2")}${cell("q3")}${cell("q4")}</div>
+      </div>`;
+  }
+
+  function agendaByDate(open, today, week) {
+    const groups = [
+      ["Overdue", "neg", open.filter((t) => t.due && t.due < today)],
+      ["Today", "gold", open.filter((t) => t.due === today)],
+      ["This week", "", open.filter((t) => t.due > today && t.due <= week)],
+      ["Later", "", open.filter((t) => t.due > week)],
+      ["Someday", "", open.filter((t) => !t.due)],
+    ].filter(([, , list]) => list.length);
+    return `<div class="grid">${groups.map(([label, cls, list]) => `
+      <div class="card">
+        <div class="card-head"><h2 class="${cls}">${label}</h2><small>${list.length}</small></div>
+        <ul class="list tasks">${list.map((t) => taskLi(t)).join("")}</ul>
+      </div>`).join("")}</div>`;
+  }
 
   /* ── sync across devices ──────────────────── */
   const TOKEN_URL = "https://github.com/settings/tokens/new?scopes=gist&description=3rd%20Iris%20sync";
@@ -1445,8 +1663,34 @@
     // tasks behave the same wherever they're listed
     const tick = e.target.closest("[data-toggle-task]");
     if (tick) return toggleTask(tick.dataset.toggleTask);
+    const step = e.target.closest("[data-toggle-step]");
+    if (step) return toggleStep(...step.dataset.toggleStep.split(":"));
+    const rm = e.target.closest("[data-remove-step-inline]");
+    if (rm) return removeStep(...rm.dataset.removeStepInline.split(":"));
+    const expand = e.target.closest("[data-expand-task]");
+    if (expand) {
+      const id = expand.dataset.expandTask;
+      ui.expandedTasks.has(id) ? ui.expandedTasks.delete(id) : ui.expandedTasks.add(id);
+      render();
+      const input = $(`[data-add-step-inline="${id}"]`);
+      if (input && !(D().tasks.find((t) => t.id === id).subtasks || []).length) input.focus();
+      return;
+    }
+    const addQ = e.target.closest("[data-add-task-q]");
+    if (addQ) return editTask({ scope: ui.agendaScope === "business" ? "business" : "personal", arcana: addQ.dataset.addTaskQ });
+    if (e.target.closest(".steps-list")) return;
     const task = e.target.closest("[data-task]");
     if (task && !e.target.closest("a")) editTask(D().tasks.find((t) => t.id === task.dataset.task));
+  });
+  document.addEventListener("keydown", (e) => {
+    const input = e.target.closest && e.target.closest("[data-add-step-inline]");
+    if (!input || e.key !== "Enter") return;
+    e.preventDefault();
+    const id = input.dataset.addStepInline;
+    addStep(id, input.value);
+    // the list re-renders; keep typing in the same place
+    const again = $(`[data-add-step-inline="${id}"]`);
+    if (again) again.focus();
   });
 
   /* ── chrome: router, sidebar, moon ─────────── */

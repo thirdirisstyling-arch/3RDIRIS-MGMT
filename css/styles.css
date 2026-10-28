@@ -506,3 +506,81 @@ h2.gold { color: var(--gold); }
 .btn[disabled] { opacity: .5; cursor: default; }
 .sync-summary { margin: 0 0 10px; color: var(--parchment); font-size: 16px; }
 .sync-summary b { color: var(--gold); font-weight: 500; }
+
+/* ── arcana (Eisenhower matrix) ───────────── */
+.matrix { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: 8px 10px; margin-top: 18px; }
+.matrix .axis { font-family: var(--font-sc); letter-spacing: .14em; font-size: 13px; color: var(--ash); }
+.matrix .axis.top { grid-column: 2; display: grid; grid-template-columns: 1fr 1fr; text-align: center; }
+.matrix .axis.side { grid-column: 1; grid-row: 2; display: grid; grid-template-rows: 1fr 1fr; }
+.matrix .axis.side span { writing-mode: vertical-rl; transform: rotate(180deg); align-self: center; justify-self: center; }
+.matrix-grid { grid-column: 2; grid-row: 2; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+
+.card.arcana { --accent: var(--gold); border-top: 2px solid var(--accent); transition: box-shadow .2s, border-color .2s; }
+.card.arcana.q1 { --accent: var(--rose); }
+.card.arcana.q2 { --accent: var(--gold); }
+.card.arcana.q3 { --accent: var(--plum); }
+.card.arcana.q4 { --accent: #7f98a8; }
+.card.arcana.unturned { --accent: var(--smoke); margin-top: 18px; border-top-style: dashed; }
+.card.arcana.drop { box-shadow: 0 0 0 2px var(--accent), 0 0 30px -6px var(--accent); }
+.arcana-head { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.arcana-glyph {
+  width: 42px; height: 42px; flex: none; display: grid; place-items: center; border-radius: 50%;
+  font-size: 22px; color: var(--accent); border: 1px solid var(--accent);
+  background: radial-gradient(circle at 50% 35%, var(--vellum-3), var(--ink));
+}
+.arcana-head h2 { font-family: var(--font-sc); font-size: 21px; letter-spacing: .04em; color: var(--parchment); }
+.arcana-head h2 .num { color: var(--accent); font-size: 15px; letter-spacing: .1em; }
+.arcana-head small { display: block; font-size: 14px; }
+.arcana-head .count { font-variant-numeric: tabular-nums; color: var(--ash); font-size: 15px; }
+.arcana-head .add-to { width: 30px; height: 30px; font-size: 18px; line-height: 1; }
+.arcana-empty { margin: 4px 0 2px; color: var(--smoke); font-style: italic; font-size: 15px; }
+
+.arcana-tag {
+  display: inline-flex; align-items: center; gap: 2px; font-size: 13px; padding: 0 8px; border-radius: 999px;
+  border: 1px solid var(--line); color: var(--ash); white-space: nowrap; font-family: var(--font-sc); letter-spacing: .04em;
+}
+.arcana-tag.q1 { border-color: #6d3e44; color: var(--rose); }
+.arcana-tag.q2 { border-color: var(--gold-dim); color: var(--gold); }
+.arcana-tag.q3 { border-color: var(--plum-deep); color: #c7a9cf; }
+.arcana-tag.q4 { border-color: #3f4d57; color: #9fb3c1; }
+
+.task-side { display: flex; align-items: center; gap: 6px; flex: none; flex-wrap: wrap; justify-content: flex-end; }
+.steps-chip {
+  font: inherit; font-size: 13px; color: var(--ash); background: transparent; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 999px; padding: 0 8px; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.steps-chip:hover { color: var(--gold); border-color: var(--gold-dim); }
+.steps-chip.all { color: var(--sage); border-color: #4d5c49; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+.steps-list { list-style: none; margin: 8px 0 2px; padding: 0 0 0 4px; border-left: 1px dashed var(--line); }
+.steps-list li { display: flex; align-items: center; gap: 8px; padding: 3px 0 3px 10px; border: 0; cursor: default; }
+.steps-list li.done .step-title { text-decoration: line-through; color: var(--smoke); }
+.steps-list .step-title { flex: 1; font-size: 16px; }
+.steps-list .add input { font-size: 15px; padding: 4px 8px; background: transparent; border-style: dashed; }
+.check-btn.sm { width: 18px; height: 18px; font-size: 9px; margin-top: 0; }
+.steps-list li.done .check-btn { background: var(--gold); border-color: var(--gold); color: var(--ink); }
+.step-x { background: none; border: 0; color: var(--smoke); cursor: pointer; font-size: 12px; padding: 2px 4px; opacity: 0; }
+.steps-list li:hover .step-x, .step-x:focus-visible { opacity: 1; }
+@media (hover: none) { .step-x { opacity: .7; } }
+
+.next-up { border-top: 2px solid var(--gold); }
+.list.numbered { counter-reset: next; }
+.list.numbered > li::before {
+  counter-increment: next; content: counter(next, upper-roman); flex: none; width: 22px; margin-top: 2px;
+  font-family: var(--font-sc); color: var(--gold); text-align: center;
+}
+
+.steps-edit { display: flex; flex-direction: column; gap: 6px; margin-bottom: 6px; }
+.step-row { display: flex; align-items: center; gap: 8px; }
+.step-row input[type=checkbox] { width: auto; flex: none; }
+.step-row .icon-btn { width: 30px; height: 30px; flex: none; font-size: 12px; }
+
+li.task[draggable=true] { cursor: grab; }
+li.task[draggable=true]:active { cursor: grabbing; }
+
+@media (max-width: 860px) {
+  .matrix { display: block; }
+  .matrix .axis { display: none; }
+  .matrix-grid { grid-template-columns: minmax(0, 1fr); }
+}
