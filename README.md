@@ -8,7 +8,7 @@ A productivity and life-management app for a creative entrepreneur, styled as th
 |---|---|
 | **Sanctum** | Overview of the month: income, spending, net, budget left, bills due and expected in the next two weeks, today's tasks, upcoming appointments, spending by category, recent entries, client counts and the moon phase |
 | **Ledger** | Personal and business expenses and income, each with a frequency (one-time, weekly, every 2 weeks, twice a month on chosen days, monthly, quarterly or annual). Recurring entries show when they're next due and are projected into the months ahead, with a projected month-end balance; recording a projected entry moves its series forward. One-time entries can have a fixed due date. Sort by any column, filter by month, kind and purse, search, bulk import, and export to CSV. A calendar view shows each day's entries, due dates, and recurring entries projected forward |
-| **Agenda** | To-do list arranged as an Eisenhower matrix of four arcana: **I · The Tower** (urgent & important: do it now), **II · The Star** (important, not urgent: make time for it), **III · The Magician** (urgent, not important: batch, automate or hand off) and **IV · The Moon** (neither: let it fade). Tasks due within 2 days count as urgent automatically; unplaced tasks wait as unturned cards. Drag tasks between arcana, break them into steps, and follow the **Next up** card's suggested order. A by-date view, purse filter, client links and the overview's Today's agenda round it out |
+| **Agenda** | To-do list sorted into the four tarot suits as an Eisenhower matrix, the fast suits holding what's urgent: **Swords** (air: urgent & important, cut through it now), **Pentacles** (earth: important, not urgent, tend it steadily), **Wands** (fire: urgent, not important, batch it or pass it on) and **Cups** (water: neither, let it drift). Tasks due within 2 days count as urgent automatically; unplaced tasks wait as unturned cards. Drag tasks between suits, break them into steps, and follow the **Next up** card's suggested order. **The draw** shows a card of the day (the same on every device) or pulls a random card from the full 78-card deck, with its meaning and a task from its suit; major arcana belong to suits through their Golden Dawn elements. A by-date view, purse filter, client links and the overview's Today's agenda round it out |
 | **Coffers** | Monthly budgets per category, split into personal and business purses, with progress bars and overspend warnings |
 | **Almanac** | Month calendar with a day agenda and upcoming list. Click a day to select it, double-click to book on that day |
 | **Codex** | Clients with standing (lead, active or past), contact details, rate, notes, lifetime earnings, next appointment, and quick *Book* and *Log payment* buttons |
@@ -42,6 +42,7 @@ Data is encrypted in the browser (AES-GCM, key derived from the passphrase with 
 - `index.html`: page shell and navigation
 - `css/styles.css`: theme tokens and layout
 - `js/store.js`: data model, persistence and sample data
+- `js/tarot.js`: the 78-card deck, the suits and the card of the day
 - `js/sync.js`: encrypted sync through a GitHub gist
 - `js/app.js`: views, forms and routing
 - `assets/logo-inverted.png`: the logo inverted onto a transparent background in bone ink

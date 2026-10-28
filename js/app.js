@@ -442,15 +442,12 @@
     });
   }
 
-  /* ── tasks: the four arcana (an Eisenhower matrix) ── */
-  const ARCANA = {
-    q1: { num: "I", name: "The Tower", glyph: "♜", axes: "Urgent & important", action: "Do it now" },
-    q2: { num: "II", name: "The Star", glyph: "✶", axes: "Important, not urgent", action: "Make time for it" },
-    q3: { num: "III", name: "The Magician", glyph: "∞", axes: "Urgent, not important", action: "Batch it, automate it or hand it off" },
-    q4: { num: "IV", name: "The Moon", glyph: "☾", axes: "Neither urgent nor important", action: "Let it fade, or do it last" },
-  };
-  const UNTURNED = { num: "", name: "Unturned cards", glyph: "✧", axes: "Not yet placed", action: "Decide how much it matters" };
-  const arcanaOf = (q) => ARCANA[q] || UNTURNED;
+  /* ── tasks: the four suits (an Eisenhower matrix) ── */
+  // the four suits, keyed by quadrant (q1–q4); see js/tarot.js
+  const SUIT_BY_Q = Object.fromEntries(Object.entries(Tarot.SUITS).map(([key, st]) => [st.q, { ...st, key }]));
+  const UNTURNED = { key: "unturned", name: "Unturned", element: "", speed: "", axes: "Not yet placed", action: "Decide how much it matters" };
+  const suitOf = (q) => SUIT_BY_Q[q] || UNTURNED;
+  const suitIcon = (q, cls = "") => Tarot.icon(suitOf(q).key, cls);
   const URGENT_WITHIN = 2; // days; anything due this soon is urgent whatever was chosen
 
   // importance is the person's call; older tasks fall back on the priority they were given
@@ -461,13 +458,13 @@
   const dueSoon = (t) => !t.done && !!t.due && t.due <= stepDays(todayStr(), URGENT_WITHIN);
   const isUrgent = (t) => t.urgent === true || dueSoon(t);
 
-  /* the arcana a task sits in now: q1–q4, or "" while its importance is undecided */
+  /* the suit a task sits in now: q1–q4, or "" while its importance is undecided */
   function quadrantOf(t) {
     const i = isImportant(t);
     if (i === undefined) return "";
     return i ? (isUrgent(t) ? "q1" : "q2") : isUrgent(t) ? "q3" : "q4";
   }
-  /* the arcana as chosen, before deadlines pull it into urgency */
+  /* the suit as chosen, before deadlines pull it into urgency */
   function chosenQuadrant(t) {
     const i = isImportant(t);
     if (i === undefined) return "";
@@ -478,11 +475,11 @@
     q3: { important: false, urgent: true }, q4: { important: false, urgent: false },
     "": { important: null, urgent: null },
   };
-  // priority is superseded once an arcana is chosen
+  // priority is superseded once a suit is chosen
   const quadrantFields = (q) => ({ ...QUADRANT_FIELDS[q || ""], priority: "normal" });
 
-  /* suggested order: the Tower first, then the Star, the Magician, the Moon; sooner deadlines and
-     work already begun go first within each. Undecided tasks wait after the Magician unless due soon. */
+  /* suggested order: Swords first, then Pentacles, Wands, Cups; sooner deadlines and work already
+     begun go first within each. Undecided tasks wait after Wands unless they're due soon. */
   function suggestRank(t) {
     const q = quadrantOf(t);
     return { q1: 0, q2: 1, q3: 2, q4: 3 }[q] ?? (dueSoon(t) ? 0.5 : 2.5);
@@ -509,7 +506,7 @@
       q4: "only once the rest is handled",
       "": dueSoon(t) ? "due soon: decide how much it matters" : "unplaced: decide how much it matters",
     }[q];
-    return [arcanaOf(q).name, when, started, why].filter(Boolean).join(" · ");
+    return [suitOf(q).name, when, started, why].filter(Boolean).join(" · ");
   }
 
   const openTasks = () => D().tasks.filter((t) => !t.done);
@@ -518,14 +515,14 @@
 
   function editTask(task = {}) {
     const isNew = !task.id;
-    const arcanaOptions = [["", "✧ Unturned · not yet placed"], ...Object.entries(ARCANA).map(([q, a]) => [q, `${a.glyph} ${a.num} · ${a.name} · ${a.axes.toLowerCase()}`])];
+    const suitOptions = [["", "Unturned · not yet placed"], ...Object.entries(SUIT_BY_Q).map(([q, a]) => [q, `${a.name} · ${a.element.toLowerCase()} · ${a.axes.toLowerCase()}`])];
     openForm({
       title: isNew ? "New Task" : "Amend Task",
-      values: { scope: "personal", ...task, arcana: task.arcana ?? chosenQuadrant(task), subtasks: task.subtasks || [] },
+      values: { scope: "personal", ...task, suit: task.suit ?? chosenQuadrant(task), subtasks: task.subtasks || [] },
       fields: [
         { name: "title", label: "What needs doing", required: true, placeholder: "e.g. send the invoice", span2: true },
-        { name: "arcana", label: "Arcana", type: "select", options: arcanaOptions.map(([value, label]) => ({ value, label })), span2: true },
-        { name: "arcanaHint", type: "note" },
+        { name: "suit", label: "Suit", type: "select", options: suitOptions.map(([value, label]) => ({ value, label })), span2: true },
+        { name: "suitHint", type: "note" },
         { name: "due", label: "Due", type: "date" },
         { name: "clientId", label: "Client", type: "select", options: clientOptions() },
         { name: "scope", label: "Purse", type: "segmented", options: [{ value: "personal", label: "Personal" }, { value: "business", label: "Business" }], span2: true },
@@ -533,17 +530,17 @@
         { name: "notes", label: "Notes", type: "textarea", span2: true },
       ],
       onChange: (v, root) => {
-        const hint = $("#arcanaHint", root);
-        const lands = quadrantOf({ ...quadrantFields(v.arcana), due: v.due });
-        const a = arcanaOf(v.arcana);
-        hint.innerHTML = v.arcana !== lands
-          ? `Due within ${URGENT_WITHIN} days, so it sits in <b>${esc(arcanaOf(lands).name)}</b> until it's done.`
-          : `<b>${esc(a.action)}.</b> Anything due within ${URGENT_WITHIN} days counts as urgent.`;
+        const hint = $("#suitHint", root);
+        const lands = quadrantOf({ ...quadrantFields(v.suit), due: v.due });
+        const a = suitOf(v.suit);
+        hint.innerHTML = v.suit !== lands
+          ? `Due within ${URGENT_WITHIN} days, so it sits in <b>${esc(suitOf(lands).name)}</b> until it's done.`
+          : `${a.element ? `<span class="suit-line">${suitIcon(v.suit)} ${esc(a.element)}, ${esc(a.speed)}:</span> ` : ""}<b>${esc(a.action)}.</b> Anything due within ${URGENT_WITHIN} days counts as urgent.`;
       },
       onSubmit: (v) => {
-        const { arcana, arcanaHint, ...rest } = v;
-        const { arcana: _preset, ...base } = task;
-        Store.upsert("tasks", { done: false, doneAt: "", ...base, ...rest, ...quadrantFields(arcana) });
+        const { suit, suitHint, ...rest } = v;
+        const { suit: _preset, ...base } = task;
+        Store.upsert("tasks", { done: false, doneAt: "", ...base, ...rest, ...quadrantFields(suit) });
         toast(isNew ? "Added to the agenda." : "Task amended.");
       },
       onDelete: isNew ? null : () => { Store.remove("tasks", task.id); toast("Task banished."); },
@@ -582,13 +579,13 @@
     if (!t) return;
     Store.upsert("tasks", { id: taskId, ...quadrantFields(q) });
     const lands = quadrantOf(D().tasks.find((x) => x.id === taskId));
-    toast(lands !== q && q ? `Due within ${URGENT_WITHIN} days, so it stays urgent. Change the due date to move it.` : `Moved to ${arcanaOf(q).name}.`);
+    toast(lands !== q && q ? `Due within ${URGENT_WITHIN} days, so it stays urgent. Change the due date to move it.` : `Moved to ${suitOf(q).name}.`);
   }
 
   function taskLi(t, { showArcana = true, reason = "" } = {}) {
     const cl = clientById(t.clientId);
     const today = todayStr();
-    const q = quadrantOf(t), a = arcanaOf(q);
+    const q = quadrantOf(t), a = suitOf(q);
     const when = t.done ? (t.doneAt ? `done ${esc(fmtDate(ymd(new Date(t.doneAt)), { month: "short", day: "numeric" }))}` : "done") : !t.due ? "" : t.due < today ? `<span class="neg">overdue · ${esc(fmtDate(t.due, { month: "short", day: "numeric" }))}</span>` : t.due === today ? `<span class="gold">today</span>` : esc(relDay(t.due) === "tomorrow" ? "tomorrow" : fmtDate(t.due));
     const meta = reason
       ? `<i>${esc(reason)}</i>`
@@ -596,7 +593,7 @@
     const steps = t.subtasks || [];
     const doneSteps = steps.filter((st) => st.done).length;
     const open = ui.expandedTasks.has(t.id);
-    const arcanaTag = showArcana && !t.done ? `<span class="arcana-tag ${q || "unturned"}" title="${esc(a.name)}: ${esc(a.axes.toLowerCase())}">${a.glyph}<span class="hide-sm"> ${esc(a.name.replace(/^The /, ""))}</span></span>` : "";
+    const arcanaTag = showArcana && !t.done ? `<span class="arcana-tag ${q || "unturned"}" title="${esc(a.name)}: ${esc(a.axes.toLowerCase())}">${suitIcon(q)}<span class="hide-sm">${esc(a.name)}</span></span>` : "";
     return `<li class="task ${t.done ? "done" : ""}" data-task="${t.id}" draggable="${t.done ? "false" : "true"}">
       <button class="check-btn" data-toggle-task="${t.id}" role="checkbox" aria-checked="${t.done ? "true" : "false"}" aria-label="${t.done ? "Mark not done" : "Mark done"}: ${esc(t.title)}"><span>✦</span></button>
       <div class="grow">
@@ -611,10 +608,65 @@
       </div>
       <div class="task-side">
         ${arcanaTag}
-        <button class="steps-chip ${steps.length && doneSteps === steps.length ? "all" : ""}" data-expand-task="${t.id}" aria-expanded="${open}" ${steps.length ? "" : 'aria-label="Add steps"'} title="${open ? "Hide steps" : steps.length ? "Show steps" : "Add steps"}">${steps.length ? `${doneSteps}/${steps.length} <span aria-hidden="true">${open ? "▴" : "▾"}</span><span class="sr">steps</span>` : `+<span class="hide-sm"> steps</span>`}</button>
-        ${showArcana ? `<span class="tag ${t.scope === "business" ? "biz" : ""} hide-sm">${esc(t.scope || "personal")}</span>` : ""}
+        ${reason && !steps.length ? "" : `<button class="steps-chip ${steps.length && doneSteps === steps.length ? "all" : ""}" data-expand-task="${t.id}" aria-expanded="${open}" ${steps.length ? "" : 'aria-label="Add steps"'} title="${open ? "Hide steps" : steps.length ? "Show steps" : "Add steps"}">${steps.length ? `${doneSteps}/${steps.length} <span aria-hidden="true">${open ? "▴" : "▾"}</span><span class="sr">steps</span>` : `+<span class="hide-sm"> steps</span>`}</button>`}
+        ${showArcana && !reason ? `<span class="tag ${t.scope === "business" ? "biz" : ""} hide-sm">${esc(t.scope || "personal")}</span>` : ""}
       </div>
     </li>`;
+  }
+
+  /* ── the draw: card of the day, or a fresh pull, pointing at a task of its suit ── */
+  function tarotCardHTML(card, { fresh = false } = {}) {
+    let art;
+    if (card.major) art = `<img src="assets/icon-192.png" alt="">`;
+    else if (["Page", "Knight", "Queen", "King"].includes(card.rank)) art = Tarot.icon(card.suit, "court");
+    else {
+      // numbered cards show their count of suit marks, like a real deck's pips
+      const n = ["Ace", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"].indexOf(card.rank) + 1;
+      art = n === 1 ? Tarot.icon(card.suit, "ace") : `<span class="pips n${n}">${Tarot.icon(card.suit).repeat(n)}</span>`;
+    }
+    return `<div class="tarot-card ${card.major ? "major" : ""} ${card.suit} ${fresh ? "flip" : ""}" role="img" aria-label="${esc(card.name)}">
+      <span class="tc-mark">${esc(Tarot.markOf(card))}</span>
+      <span class="tc-corner">${Tarot.icon(card.suit)}</span>
+      <span class="tc-art">${art}</span>
+      <span class="tc-name">${esc(card.name)}</span>
+    </div>`;
+  }
+
+  function drawnTask(card, taskId) {
+    const q = Tarot.SUITS[card.suit].q;
+    const pool = openTasks().filter((t) => ui.agendaScope === "all" || (t.scope || "personal") === ui.agendaScope).sort(bySuggested);
+    const inSuit = pool.filter((t) => quadrantOf(t) === q);
+    const kept = taskId && inSuit.find((t) => t.id === taskId);
+    return { task: kept || inSuit[0] || pool[0] || null, inSuit: !!(kept || inSuit[0]) };
+  }
+
+  function drawPanel() {
+    const card = ui.draw ? Tarot.DECK.find((c) => c.id === ui.draw.cardId) : Tarot.cardOfDay(todayStr());
+    const st = Tarot.SUITS[card.suit];
+    const { task, inSuit } = drawnTask(card, ui.draw && ui.draw.taskId);
+    const fresh = !!(ui.draw && ui.draw.fresh);
+    if (ui.draw) ui.draw.fresh = false;
+    const suggestion = task
+      ? `<p class="sub-h">${inSuit ? `The ${esc(st.name.toLowerCase())} suggest` : `No ${esc(st.name.toLowerCase())} to hand; the deck turns to`}</p>
+         <ul class="list tasks">${taskLi(task, { reason: suggestReason(task) })}</ul>`
+      : `<p class="advice">Nothing left to do. The cards say: rest.</p>`;
+    return `<div class="card draw-panel">
+      <div class="card-head"><h2>The draw</h2><small>${ui.draw ? "drawn just now" : "card of the day"}</small></div>
+      <div class="draw">
+        ${tarotCardHTML(card, { fresh })}
+        <div class="reading">
+          <h3>${esc(card.name)}</h3>
+          <p class="element">${Tarot.icon(card.suit)} ${esc(st.element)} · ${esc(st.name)} · ${esc(st.speed)}</p>
+          <p class="meaning">${esc(card.meaning)}</p>
+          <p class="advice">${card.major ? `A major card, of ${esc(st.element.toLowerCase())}. ` : ""}${esc(st.name)} ask you to <i>${esc(st.action.charAt(0).toLowerCase() + st.action.slice(1))}</i>.</p>
+          ${suggestion}
+          <div class="toolbar" style="margin:12px 0 0">
+            <button class="btn sm" data-act="draw-card">${ui.draw ? "Draw another" : "Draw a card"}</button>
+            ${ui.draw ? `<button class="btn ghost sm" data-act="draw-reset">Card of the day</button>` : ""}
+          </div>
+        </div>
+      </div>
+    </div>`;
   }
 
   function editCategory(cat = {}) {
@@ -860,6 +912,7 @@
     agendaShowDone: prefs.agendaShowDone === true,
     agendaView: prefs.agendaView === "list" ? "list" : "matrix",
     expandedTasks: new Set(),
+    draw: null, // { cardId, taskId, fresh } after drawing; null shows the card of the day
   };
 
   const views = {};
@@ -1366,28 +1419,31 @@
         <form class="card quick-add" id="quickAdd" autocomplete="off">
           <input name="title" placeholder="Add a task and press Enter…" aria-label="New task" required>
           <input name="due" type="date" aria-label="Due date" title="Due date (optional)">
-          <select name="arcana" aria-label="Arcana">
-            <option value="">✧ Unturned</option>
-            ${Object.entries(ARCANA).map(([q, a]) => `<option value="${q}">${a.glyph} ${a.name}</option>`).join("")}
+          <select name="suit" aria-label="Suit">
+            <option value="">Unturned</option>
+            ${Object.entries(SUIT_BY_Q).map(([q, a]) => `<option value="${q}">${a.name} · ${a.axes.toLowerCase()}</option>`).join("")}
           </select>
           <button class="btn primary" type="submit">Add</button>
         </form>
         <div class="toolbar" style="margin-top:16px">
-          ${seg("agendaView", ui.agendaView, [["matrix", "Arcana"], ["list", "By date"]])}
+          ${seg("agendaView", ui.agendaView, [["matrix", "Suits"], ["list", "By date"]])}
           ${seg("agendaScope", ui.agendaScope, [["all", "All"], ["personal", "Personal"], ["business", "Business"]])}
           <span class="spacer"></span>
           <label class="check"><input type="checkbox" id="agendaShowDone" ${ui.agendaShowDone ? "checked" : ""}> Show finished</label>
         </div>
         <div class="grid cols-4 stats" style="margin-bottom:18px">
           <div class="card stat"><div class="label">Open</div><div class="value">${open.length}</div></div>
-          <div class="card stat"><div class="label">In the Tower</div><div class="value ${open.some((t) => quadrantOf(t) === "q1") ? "neg" : ""}">${open.filter((t) => quadrantOf(t) === "q1").length}</div></div>
+          <div class="card stat"><div class="label">In Swords</div><div class="value ${open.some((t) => quadrantOf(t) === "q1") ? "neg" : ""}">${open.filter((t) => quadrantOf(t) === "q1").length}</div></div>
           <div class="card stat"><div class="label">Overdue</div><div class="value ${open.some((t) => t.due && t.due < today) ? "neg" : ""}">${open.filter((t) => t.due && t.due < today).length}</div></div>
           <div class="card stat"><div class="label">Done this week</div><div class="value pos">${doneThisWeek}</div></div>
         </div>
-        ${next.length ? `<div class="card next-up">
-          <div class="card-head"><h2>Next up</h2><small>suggested order</small></div>
-          <ol class="list tasks numbered">${next.map((t) => taskLi(t, { reason: suggestReason(t) })).join("")}</ol>
-        </div>` : ""}
+        <div class="grid split-even">
+          ${next.length ? `<div class="card next-up">
+            <div class="card-head"><h2>Next up</h2><small>suggested order</small></div>
+            <ol class="list tasks numbered">${next.map((t) => taskLi(t, { reason: suggestReason(t) })).join("")}</ol>
+          </div>` : ""}
+          ${drawPanel()}
+        </div>
         ${!open.length ? `<div class="card">${empty("☑", all.length ? "Everything's done. Rest a while." : "No tasks yet. Add one above.")}</div>`
           : ui.agendaView === "list" ? agendaByDate(open, today, week) : agendaMatrix(open)}
         ${ui.agendaShowDone && done.length ? `<div class="card" style="margin-top:18px">
@@ -1406,12 +1462,12 @@
         if (!title) return;
         Store.upsert("tasks", {
           title, due: f.get("due") || "", scope: ui.agendaScope === "business" ? "business" : "personal",
-          clientId: "", notes: "", done: false, doneAt: "", subtasks: [], ...quadrantFields(f.get("arcana") || ""),
+          clientId: "", notes: "", done: false, doneAt: "", subtasks: [], ...quadrantFields(f.get("suit") || ""),
         });
         toast("Added to the agenda.");
         $("#quickAdd input[name=title]").focus();
       });
-      // drag a task onto another arcana to move it (pointer devices; on touch, use the form)
+      // drag a task onto another suit to move it (pointer devices; on touch, use the form)
       $$("[data-quadrant]", root).forEach((zone) => {
         zone.addEventListener("dragover", (e) => { e.preventDefault(); zone.classList.add("drop"); });
         zone.addEventListener("dragleave", (e) => { if (!zone.contains(e.relatedTarget)) zone.classList.remove("drop"); });
@@ -1433,15 +1489,15 @@
     const by = { q1: [], q2: [], q3: [], q4: [], "": [] };
     open.forEach((t) => by[quadrantOf(t)].push(t));
     const cell = (q) => {
-      const a = arcanaOf(q), list = by[q];
+      const a = suitOf(q), list = by[q];
       return `<section class="card arcana ${q || "unturned"}" data-quadrant="${q}" aria-label="${esc(a.name)}: ${esc(a.axes)}">
         <header class="arcana-head">
-          <span class="arcana-glyph" aria-hidden="true">${a.glyph}</span>
-          <div class="grow"><h2>${a.num ? `<span class="num">${a.num}</span> ` : ""}${esc(a.name)}</h2><small>${esc(a.axes)} · <i>${esc(a.action.toLowerCase())}</i></small></div>
+          <span class="arcana-glyph">${suitIcon(q)}</span>
+          <div class="grow"><h2>${esc(q ? a.name : "Unturned cards")}${a.element ? ` <span class="num">${esc(a.element)} · ${esc(a.speed)}</span>` : ""}</h2><small>${esc(a.axes)} · <i>${esc(a.action.toLowerCase())}</i></small></div>
           <span class="count">${list.length}</span>
           <button class="icon-btn add-to" data-add-task-q="${q}" aria-label="Add a task to ${esc(a.name)}">+</button>
         </header>
-        ${list.length ? `<ul class="list tasks">${list.map((t) => taskLi(t, { showArcana: false })).join("")}</ul>` : `<p class="arcana-empty">${q === "q1" ? "Nothing burning. ✦" : "Empty. Drag a task here."}</p>`}
+        ${list.length ? `<ul class="list tasks">${list.map((t) => taskLi(t, { showArcana: false })).join("")}</ul>` : `<p class="arcana-empty">${q === "q1" ? "No swords drawn. ✦" : "Empty. Drag a task here."}</p>`}
       </section>`;
     };
     return `${by[""].length ? cell("") : ""}
@@ -1632,6 +1688,17 @@
     "add-client": () => editClient(),
     "add-category": () => editCategory(),
     "add-task": () => editTask({ scope: ui.agendaScope === "business" ? "business" : "personal" }),
+    "draw-card": () => {
+      const current = ui.draw ? ui.draw.cardId : Tarot.cardOfDay(todayStr()).id;
+      const card = Tarot.draw(current);
+      // a little chance in what's suggested too: any of the top three of that suit
+      const q = Tarot.SUITS[card.suit].q;
+      const top = openTasks().filter((t) => (ui.agendaScope === "all" || (t.scope || "personal") === ui.agendaScope) && quadrantOf(t) === q).sort(bySuggested).slice(0, 3);
+      const pick = top[Math.floor(Math.random() * top.length)];
+      ui.draw = { cardId: card.id, taskId: pick ? pick.id : "", fresh: true };
+      render();
+    },
+    "draw-reset": () => { ui.draw = null; render(); },
     "clear-done": () => {
       const n = Store.removeWhere("tasks", (t) => t.done);
       if (!n) return;
@@ -1677,7 +1744,7 @@
       return;
     }
     const addQ = e.target.closest("[data-add-task-q]");
-    if (addQ) return editTask({ scope: ui.agendaScope === "business" ? "business" : "personal", arcana: addQ.dataset.addTaskQ });
+    if (addQ) return editTask({ scope: ui.agendaScope === "business" ? "business" : "personal", suit: addQ.dataset.addTaskQ });
     if (e.target.closest(".steps-list")) return;
     const task = e.target.closest("[data-task]");
     if (task && !e.target.closest("a")) editTask(D().tasks.find((t) => t.id === task.dataset.task));
