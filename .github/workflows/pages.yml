@@ -23,6 +23,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
+      # stamp this deploy's version onto the page and its files, so browsers never mix an
+      # old script with a new page, and open copies of the app can tell they're out of date
+      - name: Stamp the version
+        run: |
+          V="${GITHUB_SHA::7}"
+          sed -i "s/__V__/$V/g" index.html
+          echo "$V" > version.txt
       # the app is static, so the repo root is the site
       - uses: actions/upload-pages-artifact@v3
         with:

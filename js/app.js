@@ -2079,6 +2079,28 @@
     if (changed) Store.save();
   })();
 
+  /* an installed app can stay open for days; when a newer version has been published,
+     reload into it, but only at a quiet moment, and only once per version */
+  const MY_VERSION = document.querySelector('meta[name="app-version"]')?.content || "";
+  async function checkForUpdate() {
+    if (!MY_VERSION || MY_VERSION === "__V__" || location.protocol === "file:") return;
+    try {
+      const res = await fetch(`version.txt?t=${Date.now()}`, { cache: "no-store" });
+      if (!res.ok) return;
+      const latest = (await res.text()).trim();
+      if (!latest || latest === MY_VERSION) return;
+      const busy = $("#modal").open || /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "");
+      let tried = "";
+      try { tried = sessionStorage.getItem("3rdiris.reloadedFor") || ""; } catch {}
+      if (busy || tried === latest) return;
+      try { sessionStorage.setItem("3rdiris.reloadedFor", latest); } catch {}
+      location.reload();
+    } catch { /* offline: try again later */ }
+  }
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkForUpdate(); });
+  setInterval(checkForUpdate, 10 * 60000);
+  setTimeout(checkForUpdate, 4000);
+
   // lets the app be installed on phones and open without a connection
   if ("serviceWorker" in navigator && window.isSecureContext && location.protocol !== "file:") {
     navigator.serviceWorker.register("sw.js").catch(() => {});
