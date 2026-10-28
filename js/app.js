@@ -1753,6 +1753,11 @@
     if (changed) Store.save();
   })();
 
+  // lets the app be installed on phones and open without a connection
+  if ("serviceWorker" in navigator && window.isSecureContext && location.protocol !== "file:") {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  }
+
   Store.onChange(render);
   Sync.onChange(() => {
     renderSyncStatus();
