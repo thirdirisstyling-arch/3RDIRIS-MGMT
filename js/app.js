@@ -1932,6 +1932,96 @@
     });
   }
 
+  /* paste a plan into the content calendar: preview, pick what to keep, link it to a working */
+  let postDraft = { text: "", projectId: "", status: "idea" };
+
+  function openPostImport() {
+    modal.classList.add("wide");
+    $("#modalTitle").textContent = "Import Posts";
+    $("#modalBody").oninput = null;
+    if (!postDraft.projectId && ui.contentProject !== "all" && ui.contentProject !== "none") postDraft.projectId = ui.contentProject;
+    postImportStep1();
+    modal.showModal();
+    $(".import-text", modal).focus();
+  }
+
+  function postImportStep1() {
+    $("#modalBody").innerHTML = `
+      <p class="import-help">Paste a plan, one post per row, from a spreadsheet or as comma-separated text. With a header row such as
+        <code>date,platform,format,title,notes</code> the columns can come in any order (<code>time</code> and <code>status</code> work too);
+        without one, they're read in that order. Dates can be <code>2026-11-02</code> or <code>11/2</code>; rows without a date land under “not yet scheduled”.</p>
+      <textarea class="import-text" spellcheck="false" placeholder="date,platform,format,title,notes&#10;2026-11-02,Instagram,Carousel,Something is being made,Ask: follow along">${esc(postDraft.text)}</textarea>
+      <div class="form-grid" style="margin-top:12px">
+        <label class="field">Link every post to<select id="postProject">${projectOptions(postDraft.projectId).map((o) => `<option value="${esc(o.value)}" ${o.value === postDraft.projectId ? "selected" : ""}>${esc(o.label)}</option>`).join("")}</select></label>
+        <label class="field">Stage, where none is given<select id="postStatus">${CONTENT_STATUS.map(([v, l]) => `<option value="${v}" ${v === postDraft.status ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+      </div>
+      <p class="form-error" id="formError"></p>`;
+    $("#modalFoot").innerHTML = `<span class="spacer"></span><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary">Preview</button>`;
+    const ta = $(".import-text", modal);
+    ta.addEventListener("input", () => (postDraft.text = ta.value));
+    $("#postProject", modal).addEventListener("change", (e) => (postDraft.projectId = e.target.value));
+    $("#postStatus", modal).addEventListener("change", (e) => (postDraft.status = e.target.value));
+    modalSubmit = () => {
+      const rows = Importer.parsePosts(postDraft.text, todayStr()).sort((a, b) => (a.date || "9999").localeCompare(b.date || "9999"));
+      if (!rows.length) { $("#formError").textContent = "Paste some rows first."; return false; }
+      postImportStep2(rows);
+      return false;
+    };
+  }
+
+  function postImportStep2(rows) {
+    const key = (c) => `${c.date}|${(c.title || "").trim().toLowerCase()}`;
+    const existing = new Set(D().content.map(key));
+    rows.forEach((r) => { r.duplicate = r.ok && existing.has(key(r)); r.include = r.ok && !r.duplicate; });
+    const proj = projectById(postDraft.projectId);
+    const render = () => {
+      const n = rows.filter((r) => r.include).length;
+      const dupes = rows.filter((r) => r.duplicate).length, bad = rows.filter((r) => !r.ok).length;
+      $(".import-summary", modal).innerHTML = `<span><b>${n}</b> of ${rows.length} posts selected</span>
+        ${proj ? `<span>linked to ${projectChip(proj.id)}</span>` : ""}
+        ${dupes ? `<span class="neg">${dupes} already in the calendar</span>` : ""}${bad ? `<span class="neg">${bad} unreadable</span>` : ""}`;
+      $("[data-import-go]", modal).textContent = `Import ${n}`;
+      $("[data-import-go]", modal).disabled = !n;
+    };
+    $("#modalBody").innerHTML = `
+      <div class="import-summary"></div>
+      <div class="import-preview"><table>
+        <thead><tr><th></th><th>Date</th><th>Post</th><th class="hide-sm">Where</th><th class="hide-sm">Notes</th></tr></thead>
+        <tbody>${rows.map((r, i) => `<tr class="${r.include ? "" : "skip"}">
+          <td><input type="checkbox" data-row="${i}" ${r.include ? "checked" : ""} ${r.ok ? "" : "disabled"} style="width:auto" aria-label="Include ${esc(r.title)}"></td>
+          <td style="white-space:nowrap">${r.date ? fmtDate(r.date, { weekday: "short", month: "short", day: "numeric" }) : "<small>unscheduled</small>"}${r.time ? ` <small>${esc(fmtTime(r.time))}</small>` : ""}</td>
+          <td>${esc(r.title || r.raw.join(" "))}${!r.ok ? ` <span class="tag err">${esc(r.error)}</span>` : r.duplicate ? ` <span class="tag dupe">already planned</span>` : ""}
+            <small class="show-sm"><br>${esc([r.platform, r.format].filter(Boolean).join(" · "))}</small></td>
+          <td class="hide-sm">${esc([r.platform, r.format].filter(Boolean).join(" · "))}${r.status ? ` <span class="tag cstatus ${esc(r.status)}">${esc(labelOf(CONTENT_STATUS, r.status))}</span>` : ""}</td>
+          <td class="note hide-sm">${esc(r.notes)}</td>
+        </tr>`).join("")}</tbody></table></div>
+      <p class="form-error" id="formError"></p>`;
+    $("#modalFoot").innerHTML = `<button type="button" class="btn ghost" data-import-back>← Back</button><span class="spacer"></span><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary" data-import-go>Import</button>`;
+    $(".import-preview tbody", modal).addEventListener("change", (e) => {
+      const i = e.target.dataset.row;
+      if (i === undefined) return;
+      rows[i].include = e.target.checked;
+      e.target.closest("tr").classList.toggle("skip", !e.target.checked);
+      render();
+    });
+    $("[data-import-back]", modal).addEventListener("click", postImportStep1);
+    render();
+    modalSubmit = () => {
+      const chosen = rows.filter((r) => r.include);
+      if (!chosen.length) return false;
+      // show the month the plan starts in (set first: each save redraws the page)
+      const first = chosen.map((r) => r.date).filter(Boolean).sort()[0];
+      if (first) { ui.contentMonth = new Date(+first.slice(0, 4), +first.slice(5, 7) - 1, 1); ui.contentDay = first; }
+      chosen.forEach((r) => Store.upsert("content", {
+        title: r.title, date: r.date, time: r.time, platform: r.platform, format: r.format,
+        status: r.status || postDraft.status, projectId: postDraft.projectId, notes: r.notes, link: "",
+      }));
+      postDraft = { ...postDraft, text: "" };
+      toast(`${chosen.length} post${chosen.length === 1 ? "" : "s"} added to the content calendar.`);
+      return true;
+    };
+  }
+
   const contentLi = (c, { showProject = true } = {}) => `<li data-content="${c.id}" style="cursor:pointer">
       ${c.date ? dateChip(c.date) : `<div class="date-chip undated"><span class="m">—</span><span class="d">?</span></div>`}
       <div class="grow"><span class="title">${esc(c.title)}</span>
@@ -2078,6 +2168,7 @@
         <div class="segmented" data-ui="contentView">${[["calendar", "Calendar"], ["pipeline", "Pipeline"]].map(([v, l]) => `<button class="${ui.contentView === v ? "on" : ""}" data-value="${v}">${l}</button>`).join("")}</div>
         ${ui.contentView === "calendar" ? `<div class="month-nav"><button class="icon-btn" data-cmonth="-1" aria-label="Previous month">‹</button><span>${monthLabel(m)}</span><button class="icon-btn" data-cmonth="1" aria-label="Next month">›</button></div>` : ""}
         <span class="spacer"></span>
+        <button class="btn ghost sm" data-act="import-posts">Import posts</button>
         <select id="contentProject" aria-label="Filter by working" style="width:auto">${projOpts.map(([v, l]) => `<option value="${esc(v)}" ${ui.contentProject === v ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>
       </div>`;
     if (ui.contentView === "pipeline") {
@@ -2394,6 +2485,7 @@
     "edit-project": (b) => editProject(projectById(b.dataset.id)),
     "add-content-day": () => editContent({ date: ui.workTab === "content" && currentView() === "workings" ? ui.contentDay : "", projectId: ui.contentProject !== "all" && ui.contentProject !== "none" ? ui.contentProject : "" }),
     "add-content-project": (b) => editContent({ projectId: b.dataset.id }),
+    "import-posts": () => openPostImport(),
     "add-idea-project": (b) => editIdea({ projectId: b.dataset.id, shelf: "" }),
     "add-expense-project": (b) => editTransaction({ type: "expense", scope: "business", projectId: b.dataset.id }),
     "draw-card": () => {

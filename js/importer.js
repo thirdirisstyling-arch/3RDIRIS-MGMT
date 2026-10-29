@@ -193,7 +193,48 @@
     });
   }
 
-  const api = { parse, splitRows, parseDate, parseMoney, normFrequency };
+  /* posts for the content calendar. With a header row, columns are matched by name; without one
+     they're read as date, platform, format, title, notes. Yearless dates (11/2) take the coming year. */
+  const POST_ALIASES = {
+    date: ["date", "day", "when", "goes out"],
+    time: ["time", "at"],
+    title: ["title", "post", "what", "idea", "topic", "concept"],
+    platform: ["platform", "where", "channel", "network"],
+    format: ["format", "type", "kind"],
+    status: ["status", "stage"],
+    notes: ["notes", "note", "caption", "ask", "description", "details"],
+  };
+  const POST_STAGES = { idea: "idea", drafting: "drafting", draft: "drafting", ready: "ready", scheduled: "scheduled", posted: "posted", published: "posted", live: "posted" };
+
+  function parsePosts(text, today = new Date().toISOString().slice(0, 10)) {
+    const rows = splitRows(text || "");
+    if (!rows.length) return [];
+    const lower = rows[0].map((c) => c.toLowerCase());
+    const hasHeader = lower.some((c) => POST_ALIASES.title.includes(c)) && lower.some((c) => POST_ALIASES.date.includes(c) || POST_ALIASES.platform.includes(c));
+    const map = {};
+    if (hasHeader) lower.forEach((c, i) => { for (const [k, names] of Object.entries(POST_ALIASES)) if (names.includes(c) && map[k] === undefined) map[k] = i; });
+    else Object.assign(map, { date: 0, platform: 1, format: 2, title: 3, notes: 4 });
+    const extraCols = hasHeader ? new Set(Object.values(map)) : null;
+    return (hasHeader ? rows.slice(1) : rows).map((cells) => {
+      const get = (k) => (map[k] !== undefined ? (cells[map[k]] || "").trim() : "");
+      const rawDate = get("date");
+      const date = rawDate ? parseDate(rawDate) || monthDayNear(rawDate, today) || "" : "";
+      const extra = extraCols ? cells.filter((c, i) => !extraCols.has(i) && c.trim()) : [];
+      const out = {
+        title: get("title"), date, time: /^\d{1,2}:\d{2}$/.test(get("time")) ? get("time").padStart(5, "0") : "",
+        platform: get("platform"), format: get("format"),
+        status: POST_STAGES[get("status").toLowerCase()] || "",
+        notes: [get("notes"), ...extra].filter(Boolean).join("\n"),
+        raw: cells, error: "",
+      };
+      if (!out.title) out.error = "No title";
+      else if (rawDate && !date) out.error = `Unreadable date “${rawDate}”`;
+      out.ok = !out.error;
+      return out;
+    });
+  }
+
+  const api = { parse, parsePosts, splitRows, parseDate, parseMoney, normFrequency };
   if (typeof module !== "undefined") module.exports = api;
   else root.Importer = api;
 })(typeof window !== "undefined" ? window : globalThis);
