@@ -427,6 +427,7 @@
         { name: "days", label: "Days of the month", placeholder: "e.g. 3, 16" },
         { name: "clientId", label: "Client", type: "select", options: clientOptions() },
         { name: "projectId", label: "Project", type: "select", options: projectOptions(tx.projectId) },
+        { name: "partnerId", label: "Partner or source", type: "select", options: partnerOptions(tx.partnerId), span2: true },
         { name: "notes", label: "Notes", type: "textarea", span2: true },
       ],
       onChange: (v, root) => {
@@ -975,6 +976,8 @@
     agendaScope: "all",
     agendaShowDone: prefs.agendaShowDone === true,
     cabinetShelf: "all",
+    codexTab: ["clients", "partnership", "affiliate", "source", "collaborator", "all"].includes(prefs.codexTab) ? prefs.codexTab : "clients",
+    codexShowClosed: false,
     workTab: ["projects", "timeline", "content"].includes(prefs.workTab) ? prefs.workTab : "projects",
     workStatus: "active",
     timelineAll: false,
@@ -1061,6 +1064,14 @@
                   : empty("☑", D().tasks.some((t) => !t.done) ? "Nothing due today." : "No tasks yet. Add one in the Agenda.");
               })()}
             </div>
+            ${(() => {
+              const due = followUpsDue(3);
+              if (!due.length) return "";
+              return `<div class="card">
+                <div class="card-head"><h2>Follow-ups</h2><a href="#codex">codex →</a></div>
+                <ul class="list">${due.slice(0, 5).map((p) => `<li data-goto="codex/${esc(p.id)}" style="cursor:pointer">${dateChip(p.followUp)}<div class="grow"><span class="title">${esc(p.name)}</span><span class="meta">${p.nextStep ? `${esc(p.nextStep)} · ` : ""}${followLabel(p.followUp)}</span></div></li>`).join("")}</ul>
+              </div>`;
+            })()}
             ${(() => {
               const soon = stepDays(today, 14);
               const items = [
@@ -1236,7 +1247,7 @@
         const cl = clientById(t.clientId);
         const meta = t.projected
           ? `projected${t.date < todayStr() ? " · not recorded yet" : ""}`
-          : [cl && esc(cl.name), projectChip(t.projectId), t.notes && esc(t.notes)].filter(Boolean).join(" · ");
+          : [cl && esc(cl.name), projectChip(t.projectId), partnerChip(t.partnerId), t.notes && esc(t.notes)].filter(Boolean).join(" · ");
         // recurring: when the series is next due; one-time: its own due date
         const due = t.projected
           ? `<span class="${dueClass(t.date)}">${esc(t.date < todayStr() ? "past due" : dueLabel(t.date))}</span>`
@@ -1445,49 +1456,321 @@
     },
   };
 
-  views.codex = {
-    title: "Codex",
-    actions: () => `<button class="btn primary" data-act="add-client">+ Client</button>`,
-    render() {
-      const q = ui.codexSearch.toLowerCase();
-      const today = todayStr();
-      const list = D().clients
-        .filter((c) => ui.codexStatus === "all" || c.status === ui.codexStatus)
-        .filter((c) => !q || [c.name, c.email, c.phone, c.notes].some((s) => s && s.toLowerCase().includes(q)))
-        .sort((a, b) => a.name.localeCompare(b.name));
-      const counts = (s) => D().clients.filter((c) => s === "all" || c.status === s).length;
-      return `
-        <div class="toolbar">
-          <div class="segmented" data-ui="codexStatus">${[["all", "All"], ["lead", "Leads"], ["active", "Active"], ["past", "Past"]].map(([v, l]) => `<button class="${ui.codexStatus === v ? "on" : ""}" data-value="${v}">${l} (${counts(v)})</button>`).join("")}</div>
-          <span class="spacer"></span>
-          <input type="search" id="codexSearch" placeholder="Search clients…" value="${esc(ui.codexSearch)}" style="max-width:240px">
+  /* ── the Codex: clients, and every other relationship the business keeps ── */
+  const REL_KINDS = [
+    ["partnership", "Partnerships", "Brand partnership", "collabs, sponsorships, PR"],
+    ["affiliate", "Affiliates", "Affiliate", "links and discount codes"],
+    ["source", "Sources", "Source", "suppliers, makers, freelancers"],
+    ["collaborator", "Collaborators", "Collaborator", "photographers, models, venues"],
+  ];
+  const REL_STAGES = [
+    ["wishlist", "Wishlist", "want to work with"],
+    ["applied", "Applied", "applied or pitched"],
+    ["in-talks", "In talks", "in conversation"],
+    ["active", "Active", "working together"],
+    ["paused", "Paused", "on hold"],
+    ["closed", "Closed", "ended or declined"],
+  ];
+  const OPEN_STAGES = ["wishlist", "applied", "in-talks", "active"];
+  const kindLabel = (k) => (REL_KINDS.find(([v]) => v === k) || [, , "Relationship"])[2];
+  const partnerById = (id) => D().partners.find((p) => p.id === id);
+  function partnerOptions(current = "") {
+    const list = D().partners.filter((p) => p.stage !== "closed" || p.id === current).sort((a, b) => a.name.localeCompare(b.name));
+    return [{ value: "", label: "— none —" }, ...list.map((p) => ({ value: p.id, label: `${p.name} · ${kindLabel(p.kind).toLowerCase()}` }))];
+  }
+  const partnerChip = (id) => {
+    const p = id && partnerById(id);
+    return p ? `<a class="proj-chip" href="#codex/${esc(p.id)}" title="${esc(kindLabel(p.kind))}: ${esc(p.name)}">❦ ${esc(p.name)}</a>` : "";
+  };
+  // follow-ups that need attention: overdue, or due within the week
+  const followUpsDue = (days = 7) => D().partners
+    .filter((p) => p.followUp && p.stage !== "closed" && p.followUp <= stepDays(todayStr(), days))
+    .sort((a, b) => a.followUp.localeCompare(b.followUp));
+  const followLabel = (d) => {
+    const diff = daysBetween(todayStr(), d);
+    return diff < 0 ? `<span class="neg">follow up · ${-diff} day${diff === -1 ? "" : "s"} overdue</span>` : diff === 0 ? `<span class="gold">follow up today</span>` : `follow up ${esc(relDay(d))}`;
+  };
+  const moneyWith = (p) => {
+    const txs = D().transactions.filter((t) => t.partnerId === p.id);
+    return { txs, earned: txs.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0), spent: txs.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0) };
+  };
+  const linkHref = (u) => (/^https?:\/\//i.test(u) ? u : /^[\w-]+(\.[\w-]+)+/.test(u) ? `https://${u}` : "");
+
+  function editPartner(p = {}) {
+    const isNew = !p.id;
+    const kind = p.kind || "partnership";
+    openForm({
+      title: isNew ? `New ${kindLabel(kind)}` : p.name,
+      values: { kind, stage: "wishlist", ...p, tags: (p.tags || []).join(", ") },
+      fields: [
+        { name: "name", label: "Name", required: true, placeholder: "brand, company or person", span2: true },
+        { name: "kind", label: "Kind", type: "select", options: REL_KINDS.map(([value, , label, hint]) => ({ value, label: `${label} · ${hint}` })) },
+        { name: "stage", label: "Stage", type: "select", options: REL_STAGES.map(([value, label, hint]) => ({ value, label: `${label} · ${hint}` })) },
+        { name: "nextStep", label: "Next step", placeholder: "e.g. send the media kit", span2: true },
+        { name: "followUp", label: "Follow up on", type: "date" },
+        { name: "projectId", label: "For which working", type: "select", options: projectOptions(p.projectId) },
+        { name: "contact", label: "Contact person", placeholder: "name, role" },
+        { name: "email", label: "Email", type: "email" },
+        { name: "phone", label: "Phone", type: "tel" },
+        { name: "handle", label: "Handle", placeholder: "@…" },
+        { name: "website", label: "Website", type: "url", placeholder: "https://…", span2: true },
+        { name: "via", label: "Via", placeholder: "ShopMy, LTK, Pietra, an agency, a friend…", span2: true },
+        { name: "link", label: "Affiliate or application link", type: "url", placeholder: "https://…", span2: true },
+        { name: "code", label: "Discount code", placeholder: "e.g. IRIS15" },
+        { name: "rate", label: "Commission or rate", placeholder: "15%, $250 per reel…" },
+        { name: "offers", label: "What they offer", type: "textarea", placeholder: "products, materials, services", span2: true },
+        { name: "terms", label: "Terms", type: "textarea", placeholder: "minimums, lead times, deliverables, contract dates, payouts…", span2: true },
+        { name: "tags", label: "Tags", placeholder: "comma separated", span2: true },
+        { name: "notes", label: "Notes", type: "textarea", span2: true },
+      ],
+      onSubmit: (v) => {
+        const today = todayStr();
+        const log = (p.log || []).slice();
+        if (isNew) log.push({ id: Store.uid(), date: today, text: `Added to the codex · ${labelOf(REL_STAGES, v.stage)}`, auto: true });
+        else if (v.stage !== p.stage) log.push({ id: Store.uid(), date: today, text: `Stage: ${labelOf(REL_STAGES, p.stage)} → ${labelOf(REL_STAGES, v.stage)}`, auto: true });
+        const id = p.id || Store.uid();
+        Store.upsert("partners", { ...p, ...v, id, tags: parseTags(v.tags), log, ...(isNew ? { createdAt: new Date().toISOString() } : {}) });
+        toast(isNew ? "Added to the codex." : "Saved.");
+        if (isNew) location.hash = `codex/${id}`;
+      },
+      onDelete: isNew ? null : () => {
+        Store.remove("partners", p.id);
+        toast("Removed from the codex. Linked ledger entries are kept.");
+        location.hash = "codex";
+      },
+    });
+  }
+
+  function setPartnerStage(id, stage) {
+    const p = partnerById(id);
+    if (!p || p.stage === stage) return;
+    const log = [...(p.log || []), { id: Store.uid(), date: todayStr(), text: `Stage: ${labelOf(REL_STAGES, p.stage)} → ${labelOf(REL_STAGES, stage)}`, auto: true }];
+    Store.upsert("partners", { id, stage, log });
+  }
+
+  function partnerCard(p) {
+    const m = moneyWith(p);
+    const sub = [p.via, p.handle, p.contact].filter(Boolean).map(esc).join(" · ");
+    return `<article class="card rel-card" data-partner="${p.id}" tabindex="0">
+      <div class="rel-head"><h3>${esc(p.name)}</h3>${ui.codexTab === "all" ? `<span class="tag">${esc(kindLabel(p.kind))}</span>` : ""}</div>
+      ${sub ? `<p class="rel-sub">${sub}</p>` : ""}
+      ${p.offers ? `<p class="rel-offers">${esc(p.offers)}</p>` : ""}
+      ${p.code || p.rate ? `<div class="rel-chips">${p.code ? `<button class="code-chip" data-copy="${esc(p.code)}" title="Copy the code">${esc(p.code)} <span>⧉</span></button>` : ""}${p.rate ? `<span class="tag">${esc(p.rate)}</span>` : ""}</div>` : ""}
+      ${p.nextStep || p.followUp ? `<p class="rel-next">${p.nextStep ? `→ ${esc(p.nextStep)}` : ""}${p.followUp ? `<span class="rel-due">${followLabel(p.followUp)}</span>` : ""}</p>` : ""}
+      <div class="rel-foot">${projectChip(p.projectId)}${m.earned ? `<small class="pos">+${money(m.earned)}</small>` : ""}${m.spent ? `<small>−${money(m.spent)}</small>` : ""}</div>
+    </article>`;
+  }
+
+  function followUpsCard(list) {
+    if (!list.length) return "";
+    return `<div class="card followups">
+      <div class="card-head"><h2>Follow-ups</h2><small>due this week</small></div>
+      <ul class="list">${list.map((p) => `<li data-partner="${p.id}" style="cursor:pointer">${dateChip(p.followUp)}
+        <div class="grow"><span class="title">${esc(p.name)}</span><span class="meta">${p.nextStep ? `${esc(p.nextStep)} · ` : ""}${followLabel(p.followUp)} · ${esc(kindLabel(p.kind).toLowerCase())}</span></div>
+        <span class="tag rstage ${esc(p.stage)} hide-sm">${esc(labelOf(REL_STAGES, p.stage))}</span></li>`).join("")}</ul>
+    </div>`;
+  }
+
+  function partnerPage(p) {
+    const m = moneyWith(p), today = todayStr();
+    // newest first; entries from the same day keep the order they were made in, latest on top
+    const log = (p.log || []).map((e, i) => ({ ...e, i })).sort((a, b) => b.date.localeCompare(a.date) || b.i - a.i);
+    const row = (label, html) => (html ? `<div class="kv"><span>${label}</span><span>${html}</span></div>` : "");
+    const site = linkHref(p.website || ""), link = linkHref(p.link || "");
+    return `
+      <p style="margin:-10px 0 14px"><a href="#codex" class="back-link">← The codex</a></p>
+      <div class="card rel-hero">
+        <div class="card-head"><h2>${esc(kindLabel(p.kind))}</h2><button class="btn sm" data-act="edit-partner" data-id="${p.id}">Amend</button></div>
+        <div class="segmented stage-picker" role="group" aria-label="Stage">${REL_STAGES.map(([v, l]) => `<button class="${p.stage === v ? "on" : ""}" data-stage="${v}">${l}</button>`).join("")}</div>
+        ${p.offers ? `<p class="hero-desc" style="margin-top:12px">${esc(p.offers)}</p>` : ""}
+        <div class="kvs">
+          ${row("Contact", esc(p.contact || ""))}
+          ${row("Email", p.email ? `<a href="mailto:${esc(p.email)}">${esc(p.email)}</a>` : "")}
+          ${row("Phone", p.phone ? `<a href="tel:${esc(p.phone)}">${esc(p.phone)}</a>` : "")}
+          ${row("Handle", esc(p.handle || ""))}
+          ${row("Website", site ? `<a href="${esc(site)}" target="_blank" rel="noopener noreferrer">${esc(domainOf(site))} ↗</a>` : esc(p.website || ""))}
+          ${row("Via", esc(p.via || ""))}
+          ${row("Link", link ? `<a href="${esc(link)}" target="_blank" rel="noopener noreferrer">${esc(domainOf(link))} ↗</a> <button class="code-chip" data-copy="${esc(link)}">copy link <span>⧉</span></button>` : esc(p.link || ""))}
+          ${row("Code", p.code ? `<button class="code-chip" data-copy="${esc(p.code)}">${esc(p.code)} <span>⧉</span></button>` : "")}
+          ${row("Rate", esc(p.rate || ""))}
+          ${row("Working", projectChip(p.projectId))}
+          ${row("Tags", (p.tags || []).map((t) => `<span class="hashtag">#${esc(t)}</span>`).join(" "))}
         </div>
-        ${list.length ? `<div class="grid cols-3">${list.map((c) => {
-          const earned = D().transactions.filter((t) => t.clientId === c.id && t.type === "income").reduce((s, t) => s + t.amount, 0);
-          const next = D().appointments.filter((a) => a.clientId === c.id && a.date >= today).sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start))[0];
-          const visits = D().appointments.filter((a) => a.clientId === c.id && a.date < today).length;
-          return `<div class="card client-card">
-            <div class="who"><div class="monogram">${esc(initials(c.name))}</div><div style="min-width:0"><h3>${esc(c.name)}</h3><span class="tag ${esc(c.status)}">${esc(c.status)}</span></div></div>
-            <div class="contact">${[c.email && `<a href="mailto:${esc(c.email)}">${esc(c.email)}</a>`, c.phone && `<a href="tel:${esc(c.phone)}">${esc(c.phone)}</a>`].filter(Boolean).join(" · ") || "<i>no contact details</i>"}</div>
-            <div class="row"><small>Earned <b class="pos">${money(earned)}</b></small><small>· ${visits} past visit${visits === 1 ? "" : "s"}</small>${c.rate ? `<small>· rate ${money(c.rate)}</small>` : ""}</div>
-            <small>${next ? `Next: <span class="gold">${esc(next.title)}</span>, ${fmtDate(next.date)}${next.start ? " " + fmtTime(next.start) : ""}` : "<i>no upcoming appointment</i>"}</small>
-            ${c.notes ? `<p class="notes">${esc(c.notes)}</p>` : ""}
-            <div class="row" style="margin-top:auto;padding-top:6px"><button class="btn sm" data-book="${c.id}">Book</button><button class="btn sm" data-pay="${c.id}">Log payment</button><span class="spacer"></span><button class="btn ghost sm" data-client="${c.id}">Edit</button></div>
-          </div>`;
-        }).join("")}</div>` : `<div class="card">${empty("❦", D().clients.length ? "No clients match." : "The codex is empty. Add your first client.")}</div>`}`;
+        ${p.terms ? `<p class="rel-terms"><b>Terms</b> ${esc(p.terms)}</p>` : ""}
+        ${p.notes ? `<p class="rel-terms"><b>Notes</b> ${esc(p.notes)}</p>` : ""}
+      </div>
+      <div class="grid split" style="margin-top:18px">
+        <div class="grid" style="align-content:start">
+          <div class="card">
+            <div class="card-head"><h2>Next step</h2>${p.followUp ? `<small>${followLabel(p.followUp)}</small>` : ""}</div>
+            ${p.nextStep ? `<p class="next-now">→ ${esc(p.nextStep)}${p.followUp ? ` <small>· ${esc(fmtDate(p.followUp))}</small>` : ""}</p>` : `<p class="arcana-empty">No next step set.</p>`}
+            <form class="inline-add next-form" id="nextForm" autocomplete="off">
+              <input name="nextStep" placeholder="${p.nextStep ? "What comes after?" : "What's the next step?"}" aria-label="Next step">
+              <input name="followUp" type="date" aria-label="Follow up on" value="${esc(stepDays(today, 7))}">
+              <button class="btn sm" type="submit">${p.nextStep ? "Done, set next" : "Set"}</button>
+            </form>
+            ${p.nextStep ? `<p class="capture-hint">“Done, set next” records the current step in the log.</p>` : ""}
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>Log</h2><small>${log.length} entr${log.length === 1 ? "y" : "ies"}</small></div>
+            <form class="inline-add" id="logForm" autocomplete="off">
+              <input name="text" placeholder="What happened? (applied, replied, sample arrived…)" aria-label="Log an update">
+              <input name="date" type="date" value="${esc(today)}" aria-label="When">
+              <button class="btn sm" type="submit">Log</button>
+            </form>
+            ${log.length ? `<ol class="rel-log">${log.map((e) => `<li class="${e.auto ? "auto" : ""}"><span class="when">${esc(fmtDate(e.date, { month: "short", day: "numeric" }))}</span><span class="what">${esc(e.text)}</span><button class="step-x" data-log-x="${e.id}" aria-label="Remove this entry">✕</button></li>`).join("")}</ol>` : ""}
+          </div>
+        </div>
+        <div class="grid" style="align-content:start">
+          <div class="card">
+            <div class="card-head"><h2>Coffers</h2><span><button class="btn sm" data-act="partner-income" data-id="${p.id}">+ Income</button> <button class="btn sm" data-act="partner-expense" data-id="${p.id}">+ Expense</button></span></div>
+            <p class="project-meta"><span class="pos">${money(m.earned)} earned</span> · ${money(m.spent)} spent</p>
+            ${m.txs.length ? `<ul class="list">${m.txs.slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 8).map(txLi).join("")}</ul>` : `<p class="arcana-empty">Payouts, fees and purchases linked to ${esc(p.name)} appear here.</p>`}
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function clientsTab() {
+    const q = ui.codexSearch.toLowerCase();
+    const today = todayStr();
+    const list = D().clients
+      .filter((c) => ui.codexStatus === "all" || c.status === ui.codexStatus)
+      .filter((c) => !q || [c.name, c.email, c.phone, c.notes].some((s) => s && s.toLowerCase().includes(q)))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const counts = (s) => D().clients.filter((c) => s === "all" || c.status === s).length;
+    return `
+      <div class="toolbar">
+        <div class="segmented" data-ui="codexStatus">${[["all", "All"], ["lead", "Leads"], ["active", "Active"], ["past", "Past"]].map(([v, l]) => `<button class="${ui.codexStatus === v ? "on" : ""}" data-value="${v}">${l} (${counts(v)})</button>`).join("")}</div>
+        <span class="spacer"></span>
+        <input type="search" id="codexSearch" placeholder="Search clients…" value="${esc(ui.codexSearch)}" style="max-width:240px">
+      </div>
+      ${list.length ? `<div class="grid cols-3">${list.map((c) => {
+        const earned = D().transactions.filter((t) => t.clientId === c.id && t.type === "income").reduce((s, t) => s + t.amount, 0);
+        const next = D().appointments.filter((a) => a.clientId === c.id && a.date >= today).sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start))[0];
+        const visits = D().appointments.filter((a) => a.clientId === c.id && a.date < today).length;
+        return `<div class="card client-card">
+          <div class="who"><div class="monogram">${esc(initials(c.name))}</div><div style="min-width:0"><h3>${esc(c.name)}</h3><span class="tag ${esc(c.status)}">${esc(c.status)}</span></div></div>
+          <div class="contact">${[c.email && `<a href="mailto:${esc(c.email)}">${esc(c.email)}</a>`, c.phone && `<a href="tel:${esc(c.phone)}">${esc(c.phone)}</a>`].filter(Boolean).join(" · ") || "<i>no contact details</i>"}</div>
+          <div class="row"><small>Earned <b class="pos">${money(earned)}</b></small><small>· ${visits} past visit${visits === 1 ? "" : "s"}</small>${c.rate ? `<small>· rate ${money(c.rate)}</small>` : ""}</div>
+          <small>${next ? `Next: <span class="gold">${esc(next.title)}</span>, ${fmtDate(next.date)}${next.start ? " " + fmtTime(next.start) : ""}` : "<i>no upcoming appointment</i>"}</small>
+          ${c.notes ? `<p class="notes">${esc(c.notes)}</p>` : ""}
+          <div class="row" style="margin-top:auto;padding-top:6px"><button class="btn sm" data-book="${c.id}">Book</button><button class="btn sm" data-pay="${c.id}">Log payment</button><span class="spacer"></span><button class="btn ghost sm" data-client="${c.id}">Edit</button></div>
+        </div>`;
+      }).join("")}</div>` : `<div class="card">${empty("❦", D().clients.length ? "No clients match." : "No clients yet. Add your first.")}</div>`}`;
+  }
+
+  function relationsTab(kind) {
+    const q = ui.codexSearch.toLowerCase();
+    const list = D().partners
+      .filter((p) => kind === "all" || p.kind === kind)
+      .filter((p) => !q || [p.name, p.contact, p.email, p.handle, p.via, p.offers, p.terms, p.notes, p.code, ...(p.tags || [])].some((s) => s && s.toLowerCase().includes(q)));
+    const byStage = (st) => list.filter((p) => p.stage === st).sort((a, b) => (a.followUp || "9999").localeCompare(b.followUp || "9999") || a.name.localeCompare(b.name));
+    const set = ui.codexShowClosed ? REL_STAGES : REL_STAGES.filter(([v]) => OPEN_STAGES.includes(v));
+    const hidden = list.filter((p) => !OPEN_STAGES.includes(p.stage)).length;
+    const k = REL_KINDS.find(([v]) => v === kind);
+    return `
+      <div class="toolbar">
+        <label class="check"><input type="checkbox" id="showClosed" ${ui.codexShowClosed ? "checked" : ""}> Show paused &amp; closed${hidden ? ` (${hidden})` : ""}</label>
+        <span class="spacer"></span>
+        <input type="search" id="codexSearch" placeholder="Search ${esc(k ? k[1].toLowerCase() : "relationships")}…" value="${esc(ui.codexSearch)}" style="max-width:240px">
+      </div>
+      ${list.length ? `<div class="stage-board">${set.map(([v, l, hint]) => {
+        const items = byStage(v);
+        return `<section class="stage-col"><header><span class="tag rstage ${v}">${l}</span><small>${esc(hint)} · ${items.length}</small></header>
+          ${items.map(partnerCard).join("") || `<p class="arcana-empty">—</p>`}</section>`;
+      }).join("")}</div>`
+        : `<div class="card">${empty("❦", D().partners.some((p) => kind === "all" || p.kind === kind) ? "Nothing matches." : `No ${esc(k ? k[1].toLowerCase() : "relationships")} yet. Add the ${esc(k ? k[3] : "brands and people")} you want to work with, even before you've reached out. That's the wishlist.`)}</div>`}`;
+  }
+
+  views.codex = {
+    title: () => { const p = routeParam() && partnerById(routeParam()); return p ? p.name : "Codex"; },
+    actions: () => {
+      if (routeParam()) return "";
+      if (ui.codexTab === "clients") return `<button class="btn primary" data-act="add-client">+ Client</button>`;
+      return `<button class="btn primary" data-act="add-partner">+ ${esc(ui.codexTab === "all" ? "Relationship" : kindLabel(ui.codexTab))}</button>`;
+    },
+    render() {
+      const id = routeParam();
+      if (id) {
+        const p = partnerById(id);
+        return p ? partnerPage(p) : `<div class="card">${empty("❦", "That relationship isn't here any more. <a href=\"#codex\">Back to the codex</a>.")}</div>`;
+      }
+      const count = (k) => (k === "clients" ? D().clients.length : D().partners.filter((p) => (k === "all" || p.kind === k) && p.stage !== "closed").length);
+      const tabs = [["clients", "Clients"], ...REL_KINDS.map(([v, l]) => [v, l]), ["all", "All"]];
+      return `
+        <div class="codex-tabs">${tabs.map(([v, l]) => `<button class="shelf-chip ${ui.codexTab === v ? "on" : ""}" data-codex-tab="${v}">${l}<span>${count(v)}</span></button>`).join("")}</div>
+        ${followUpsCard(followUpsDue())}
+        ${ui.codexTab === "clients" ? clientsTab() : relationsTab(ui.codexTab)}`;
     },
     bind(root) {
       bindSegments(root);
+      $$("[data-codex-tab]", root).forEach((b) => b.addEventListener("click", () => {
+        ui.codexTab = prefs.codexTab = b.dataset.codexTab;
+        savePrefs();
+        ui.codexSearch = "";
+        render();
+      }));
       const s = $("#codexSearch", root);
-      s.addEventListener("input", () => { ui.codexSearch = s.value; render(); const n = $("#codexSearch"); n.focus(); n.setSelectionRange(n.value.length, n.value.length); });
+      if (s) s.addEventListener("input", () => { ui.codexSearch = s.value; render(); const n = $("#codexSearch"); n.focus(); n.setSelectionRange(n.value.length, n.value.length); });
+      const sc = $("#showClosed", root);
+      if (sc) sc.addEventListener("change", () => { ui.codexShowClosed = sc.checked; render(); });
       $$("[data-client]", root).forEach((b) => b.addEventListener("click", () => editClient(clientById(b.dataset.client))));
       $$("[data-book]", root).forEach((b) => b.addEventListener("click", () => editAppointment({ clientId: b.dataset.book, title: "Session" })));
       $$("[data-pay]", root).forEach((b) => b.addEventListener("click", () => {
         const c = clientById(b.dataset.pay);
         editTransaction({ type: "income", scope: "business", clientId: c.id, amount: c.rate || "", description: `Payment · ${c.name}` });
       }));
+      $$("[data-partner]", root).forEach((el) => {
+        const go = () => (location.hash = `codex/${el.dataset.partner}`);
+        el.addEventListener("click", (e) => { if (!e.target.closest("a, button")) go(); });
+        el.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target === el) go(); });
+      });
+      // on a relationship's page
+      const id = routeParam();
+      if (!id) return;
+      $$("[data-tx]", root).forEach((li) => li.addEventListener("click", () => editTransaction(D().transactions.find((t) => t.id === li.dataset.tx))));
+      $$("[data-stage]", root).forEach((b) => b.addEventListener("click", () => setPartnerStage(id, b.dataset.stage)));
+      const nf = $("#nextForm", root);
+      if (nf) nf.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const p = partnerById(id), f = new FormData(nf);
+        const next = String(f.get("nextStep") || "").trim();
+        if (!next && !p.nextStep) return;
+        const log = (p.log || []).slice();
+        if (p.nextStep) log.push({ id: Store.uid(), date: todayStr(), text: `Done: ${p.nextStep}` });
+        Store.upsert("partners", { id, log, nextStep: next, followUp: next ? f.get("followUp") || "" : "" });
+        toast(next ? "Next step set." : "Step done.");
+      });
+      const lf = $("#logForm", root);
+      if (lf) lf.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const f = new FormData(lf), text = String(f.get("text") || "").trim();
+        if (!text) return;
+        const p = partnerById(id);
+        Store.upsert("partners", { id, log: [...(p.log || []), { id: Store.uid(), date: f.get("date") || todayStr(), text }] });
+        $("#logForm input[name=text]").focus();
+      });
+      $$("[data-log-x]", root).forEach((b) => b.addEventListener("click", () => {
+        const p = partnerById(id);
+        Store.upsert("partners", { id, log: (p.log || []).filter((x) => x.id !== b.dataset.logX) });
+      }));
     },
   };
+
+  // copy a code or link, anywhere it's shown
+  document.addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-copy]");
+    if (!b) return;
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(b.dataset.copy);
+      toast(`Copied ${b.dataset.copy.length > 40 ? "the link" : b.dataset.copy}.`);
+    } catch {
+      toast("Couldn't copy here; press and hold to select it instead.");
+    }
+  }, true);
 
   views.agenda = {
     title: "Agenda",
@@ -2486,6 +2769,10 @@
     "add-content-day": () => editContent({ date: ui.workTab === "content" && currentView() === "workings" ? ui.contentDay : "", projectId: ui.contentProject !== "all" && ui.contentProject !== "none" ? ui.contentProject : "" }),
     "add-content-project": (b) => editContent({ projectId: b.dataset.id }),
     "import-posts": () => openPostImport(),
+    "add-partner": () => editPartner({ kind: ["partnership", "affiliate", "source", "collaborator"].includes(ui.codexTab) ? ui.codexTab : "partnership" }),
+    "edit-partner": (b) => editPartner(partnerById(b.dataset.id)),
+    "partner-income": (b) => { const p = partnerById(b.dataset.id); editTransaction({ type: "income", scope: "business", partnerId: p.id, description: p.kind === "affiliate" ? `Affiliate payout · ${p.name}` : `${p.name}`, projectId: p.projectId || "" }); },
+    "partner-expense": (b) => { const p = partnerById(b.dataset.id); editTransaction({ type: "expense", scope: "business", partnerId: p.id, description: p.name, projectId: p.projectId || "" }); },
     "add-idea-project": (b) => editIdea({ projectId: b.dataset.id, shelf: "" }),
     "add-expense-project": (b) => editTransaction({ type: "expense", scope: "business", projectId: b.dataset.id }),
     "draw-card": () => {

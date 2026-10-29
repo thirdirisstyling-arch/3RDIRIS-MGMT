@@ -15,7 +15,7 @@
 
   const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   const now = () => new Date().toISOString();
-  const COLLECTIONS = ["categories", "transactions", "appointments", "clients", "tasks", "ideas", "projects", "content"];
+  const COLLECTIONS = ["categories", "transactions", "appointments", "clients", "tasks", "ideas", "projects", "content", "partners"];
   // a record's last change; older data without timestamps counts as oldest
   const stamp = (r) => r.updatedAt || r.createdAt || "";
 
@@ -32,6 +32,7 @@
       ideas: [], // the Cabinet: notes, images and links
       projects: [], // Workings: ideas being carried out, with milestones
       content: [], // the content calendar
+      partners: [], // brand partnerships, affiliates, sources and collaborators
       deleted: [], // tombstones { c: collection, id, at } so deletions sync too
     };
   }
@@ -61,6 +62,7 @@
       ideas: Array.isArray(d.ideas) ? d.ideas : [],
       projects: Array.isArray(d.projects) ? d.projects : [],
       content: Array.isArray(d.content) ? d.content : [],
+      partners: Array.isArray(d.partners) ? d.partners : [],
       deleted: Array.isArray(d.deleted) ? d.deleted : [],
     };
   }
@@ -102,7 +104,8 @@
     if (collection === "clients") ["appointments", "tasks", "transactions"].forEach((c) => unlink(data[c], "clientId"));
     if (collection === "categories") unlink(data.transactions, "categoryId");
     // a project's tasks, entries, ideas and posts outlive it, just unlinked
-    if (collection === "projects") ["tasks", "transactions", "ideas", "content"].forEach((c) => unlink(data[c], "projectId"));
+    if (collection === "projects") ["tasks", "transactions", "ideas", "content", "partners"].forEach((c) => unlink(data[c], "projectId"));
+    if (collection === "partners") unlink(data.transactions, "partnerId");
   }
 
   function remove(collection, id) {
@@ -268,6 +271,22 @@
       post("Why every piece is adjustable", 11, "Instagram", "Reel", "idea"),
       post("Sample day, behind the scenes", 30, "Instagram", "Story", "idea"),
       post("Pre-orders open", 60, "Newsletter", "Email", "idea"),
+    );
+
+    const rel = (r) => ({ contact: "", email: "", phone: "", website: "", handle: "", via: "", link: "", code: "", rate: "", offers: "", terms: "", followUp: "", nextStep: "", projectId: "", tags: [], notes: "", log: [], ...r, id: uid(), createdAt: stamp, updatedAt: stamp });
+    data.partners.push(
+      rel({ name: "Velvet & Vine Hair Goods", kind: "affiliate", stage: "active", via: "ShopMy", link: "https://example.com/velvet-vine?ref=3rdiris", code: "IRIS15", rate: "15% commission",
+        offers: "Silk pillowcases, claw clips, hair oils", followUp: iso(12), nextStep: "Post the claw clip styling reel with the code",
+        log: [{ id: uid(), date: iso(-20), text: "Applied through ShopMy" }, { id: uid(), date: iso(-14), text: "Approved; code IRIS15 issued" }] }),
+      rel({ name: "Hollow Moon Apothecary", kind: "partnership", stage: "in-talks", contact: "Morgan (marketing)", email: "collabs@example.com", handle: "@hollowmoon",
+        offers: "Scalp oils and scented candles", terms: "Proposed: 1 reel + 3 stories for product + $250", followUp: iso(-1), nextStep: "Send media kit and rates",
+        log: [{ id: uid(), date: iso(-6), text: "Pitched a salon-day collab by email" }, { id: uid(), date: iso(-3), text: "They replied, interested; asked for rates" }] }),
+      rel({ name: "Deadstock velvet supplier", kind: "source", stage: "wishlist", website: "https://example.com/fabric", offers: "Deadstock velvet and silk by the metre", terms: "No minimum; swatches $2 each",
+        followUp: iso(2), nextStep: "Order swatches in plum, black and gold", projectId }),
+      rel({ name: "Pattern maker (via Pietra)", kind: "source", stage: "applied", via: "Pietra freelancers", offers: "Tech packs, patterns, first samples",
+        terms: "Brief posted; waiting on quotes", followUp: iso(3), nextStep: "Compare quotes; ask about size-inclusive grading", projectId,
+        log: [{ id: uid(), date: iso(-1), text: "Posted the brief for the wrap dress" }] }),
+      rel({ name: "Rowan Hale Photography", kind: "collaborator", stage: "wishlist", handle: "@rowanhale", offers: "Moody editorial portraits", nextStep: "Ask about a trade for the lookbook shoot", followUp: iso(9) }),
     );
     save();
   }
