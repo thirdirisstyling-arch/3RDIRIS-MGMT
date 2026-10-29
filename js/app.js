@@ -425,7 +425,8 @@
         { name: "frequency", label: "Frequency", type: "select", options: FREQUENCIES.map(([value, label]) => ({ value, label })) },
         { name: "dueDate", label: "Due date", type: "date" },
         { name: "days", label: "Days of the month", placeholder: "e.g. 3, 16" },
-        { name: "clientId", label: "Client", type: "select", options: clientOptions(), span2: true },
+        { name: "clientId", label: "Client", type: "select", options: clientOptions() },
+        { name: "projectId", label: "Project", type: "select", options: projectOptions(tx.projectId) },
         { name: "notes", label: "Notes", type: "textarea", span2: true },
       ],
       onChange: (v, root) => {
@@ -587,6 +588,7 @@
         { name: "suitHint", type: "note" },
         { name: "due", label: "Due", type: "date" },
         { name: "clientId", label: "Client", type: "select", options: clientOptions() },
+        { name: "projectId", label: "Project", type: "select", options: projectOptions(task.projectId), span2: true },
         { name: "scope", label: "Purse", type: "segmented", options: [{ value: "personal", label: "Personal" }, { value: "business", label: "Business" }], span2: true },
         { name: "subtasks", label: "Steps", type: "steps", span2: true },
         { name: "notes", label: "Notes", type: "textarea", span2: true },
@@ -644,14 +646,14 @@
     toast(lands !== q && q ? `Due within ${URGENT_WITHIN} days, so it stays urgent. Change the due date to move it.` : `Moved to ${suitOf(q).name}.`);
   }
 
-  function taskLi(t, { showArcana = true, reason = "" } = {}) {
+  function taskLi(t, { showArcana = true, reason = "", showProject = true } = {}) {
     const cl = clientById(t.clientId);
     const today = todayStr();
     const q = quadrantOf(t), a = suitOf(q);
     const when = t.done ? (t.doneAt ? `done ${esc(fmtDate(ymd(new Date(t.doneAt)), { month: "short", day: "numeric" }))}` : "done") : !t.due ? "" : t.due < today ? `<span class="neg">overdue · ${esc(fmtDate(t.due, { month: "short", day: "numeric" }))}</span>` : t.due === today ? `<span class="gold">today</span>` : esc(relDay(t.due) === "tomorrow" ? "tomorrow" : fmtDate(t.due));
     const meta = reason
       ? `<i>${esc(reason)}</i>`
-      : [when, cl ? esc(cl.name) : "", t.notes ? `<i>${esc(t.notes.length > 70 ? t.notes.slice(0, 70) + "…" : t.notes)}</i>` : ""].filter(Boolean).join(" · ");
+      : [when, cl ? esc(cl.name) : "", showProject ? projectChip(t.projectId) : "", t.notes ? `<i>${esc(t.notes.length > 70 ? t.notes.slice(0, 70) + "…" : t.notes)}</i>` : ""].filter(Boolean).join(" · ");
     const steps = t.subtasks || [];
     const doneSteps = steps.filter((st) => st.done).length;
     const open = ui.expandedTasks.has(t.id);
@@ -973,6 +975,13 @@
     agendaScope: "all",
     agendaShowDone: prefs.agendaShowDone === true,
     cabinetShelf: "all",
+    workTab: ["projects", "timeline", "content"].includes(prefs.workTab) ? prefs.workTab : "projects",
+    workStatus: "active",
+    timelineAll: false,
+    contentView: prefs.contentView === "pipeline" ? "pipeline" : "calendar",
+    contentMonth: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
+    contentDay: todayStr(),
+    contentProject: "all",
     cabinetSearch: "",
     agendaView: prefs.agendaView === "list" ? "list" : "matrix",
     expandedTasks: new Set(),
@@ -1052,6 +1061,18 @@
                   : empty("☑", D().tasks.some((t) => !t.done) ? "Nothing due today." : "No tasks yet. Add one in the Agenda.");
               })()}
             </div>
+            ${(() => {
+              const soon = stepDays(today, 14);
+              const items = [
+                ...D().projects.filter((p) => ACTIVE_STATUS.has(p.status)).flatMap((p) => (p.milestones || []).filter((m) => !m.done && m.date && m.date <= soon).map((m) => ({ date: m.date, html: `<li data-goto="workings/${esc(p.id)}" style="cursor:pointer">${dateChip(m.date)}<div class="grow"><span class="title">◆ ${esc(m.title)}</span><span class="meta">${m.date < today ? `<span class="neg">past its date</span> · ` : ""}milestone · ${esc(p.name)}</span></div></li>` }))),
+                ...D().content.filter((c) => c.status !== "posted" && c.date && c.date <= soon && c.date >= stepDays(today, -7)).map((c) => ({ date: c.date, html: contentLi(c) })),
+              ].sort((a, b) => a.date.localeCompare(b.date)).slice(0, 6);
+              if (!items.length && !D().projects.length) return "";
+              return `<div class="card">
+                <div class="card-head"><h2>Workings</h2><a href="#workings">workings →</a></div>
+                ${items.length ? `<ul class="list">${items.map((x) => x.html).join("")}</ul>` : empty("⚗", "No milestones or posts in the next two weeks.")}
+              </div>`;
+            })()}
             <div class="card">
               <div class="card-head"><h2>Due &amp; expected</h2><small>next 14 days</small></div>
               ${dueSoon.length ? `<ul class="list">${dueSoon.map((x) => `<li ${x.expected ? `data-expected="${x.t.id}@${x.date}"` : `data-tx="${x.t.id}"`} style="cursor:pointer">${dateChip(x.date)}
@@ -1071,6 +1092,7 @@
     bind(root) {
       $$("[data-appt]", root).forEach((li) => li.addEventListener("click", () => editAppointment(D().appointments.find((a) => a.id === li.dataset.appt))));
       $$("[data-tx]", root).forEach((li) => li.addEventListener("click", () => editTransaction(D().transactions.find((t) => t.id === li.dataset.tx))));
+      $$("[data-goto]", root).forEach((li) => li.addEventListener("click", () => (location.hash = li.dataset.goto)));
       $$("[data-expected]", root).forEach((li) => li.addEventListener("click", () => {
         const [id, date] = li.dataset.expected.split("@");
         logExpected({ source: D().transactions.find((t) => t.id === id), date });
@@ -1214,7 +1236,7 @@
         const cl = clientById(t.clientId);
         const meta = t.projected
           ? `projected${t.date < todayStr() ? " · not recorded yet" : ""}`
-          : [cl && cl.name, t.notes].filter(Boolean).map(esc).join(" · ");
+          : [cl && esc(cl.name), projectChip(t.projectId), t.notes && esc(t.notes)].filter(Boolean).join(" · ");
         // recurring: when the series is next due; one-time: its own due date
         const due = t.projected
           ? `<span class="${dueClass(t.date)}">${esc(t.date < todayStr() ? "past due" : dueLabel(t.date))}</span>`
@@ -1299,7 +1321,7 @@
       const b = e.target.closest("button");
       if (!b) return;
       ui[seg.dataset.ui] = b.dataset.value;
-      if (seg.dataset.ui === "ledgerView" || seg.dataset.ui === "agendaView") { prefs[seg.dataset.ui] = b.dataset.value; savePrefs(); }
+      if (["ledgerView", "agendaView", "workTab", "contentView"].includes(seg.dataset.ui)) { prefs[seg.dataset.ui] = b.dataset.value; savePrefs(); }
       render();
     }));
   }
@@ -1624,6 +1646,21 @@
 
   function editIdea(idea = {}) {
     const isNew = !idea.id;
+    function saveIdea(v, quiet = false) {
+      if (!v.title && !v.text && !v.link && !v.image) return "Add a title, a note, a link or an image.";
+      if (v.link && !URL_RE.test(v.link)) v.link = /^[\w-]+(\.[\w-]+)+/.test(v.link) ? `https://${v.link}` : v.link;
+      const im = v.image;
+      const record = {
+        ...idea, title: v.title, text: v.text, link: v.link, shelf: v.shelf, tags: parseTags(v.tags), ink: v.ink, pinned: v.pinned === "yes",
+        projectId: v.projectId || "",
+        imageId: im ? im.id : "", imageW: im ? im.w : 0, imageH: im ? im.h : 0,
+        // a new or removed picture needs a fresh upload; the old copy is cleaned up later
+        imageGist: im && im.id === idea.imageId ? idea.imageGist || "" : "",
+      };
+      if (idea.imageId && (!im || im.id !== idea.imageId)) Images.del(idea.imageId).catch(() => {});
+      Store.upsert("ideas", record);
+      if (!quiet) toast(isNew ? "Added to the cabinet." : "Saved.");
+    }
     openForm({
       title: isNew ? "New Curiosity" : "Curiosity",
       values: { ...idea, image: idea.imageId ? { id: idea.imageId, w: idea.imageW, h: idea.imageH } : null, tags: (idea.tags || []).join(", "), ink: idea.ink || "", pinned: idea.pinned ? "yes" : "no", shelf: idea.shelf ?? currentShelf() },
@@ -1636,26 +1673,30 @@
         { name: "tags", label: "Tags", placeholder: "comma separated" },
         { name: "ink", label: "Ink", type: "segmented", options: INKS.map(([value, label]) => ({ value, label })), span2: true },
         { name: "pinned", label: "Pinned to the top", type: "segmented", options: [{ value: "no", label: "No" }, { value: "yes", label: "Pinned" }] },
+        { name: "projectId", label: "Project", type: "select", options: projectOptions(idea.projectId) },
       ],
-      extra: [{ label: "Make it a task", onClick: (v) => {
-        if (!v.title && !v.text && !v.link) { $("#formError").textContent = "Write something first."; return false; }
-        ideaToTask(v);
-        return true;
-      } }],
-      onSubmit: (v) => {
-        if (!v.title && !v.text && !v.link && !v.image) return "Add a title, a note, a link or an image.";
-        if (v.link && !URL_RE.test(v.link)) v.link = /^[\w-]+(\.[\w-]+)+/.test(v.link) ? `https://${v.link}` : v.link;
-        const im = v.image;
-        const record = {
-          ...idea, title: v.title, text: v.text, link: v.link, shelf: v.shelf, tags: parseTags(v.tags), ink: v.ink, pinned: v.pinned === "yes",
-          imageId: im ? im.id : "", imageW: im ? im.w : 0, imageH: im ? im.h : 0,
-          // a new or removed picture needs a fresh upload; the old copy is cleaned up later
-          imageGist: im && im.id === idea.imageId ? idea.imageGist || "" : "",
-        };
-        if (idea.imageId && (!im || im.id !== idea.imageId)) Images.del(idea.imageId).catch(() => {});
-        Store.upsert("ideas", record);
-        toast(isNew ? "Added to the cabinet." : "Saved.");
-      },
+      extra: [
+        { label: "Make it a task", onClick: (v) => {
+          if (!v.title && !v.text && !v.link) { $("#formError").textContent = "Write something first."; return false; }
+          ideaToTask(v);
+          return true;
+        } },
+        ...(idea.projectId ? [] : [{ label: "Start a working", onClick: (v) => {
+          if (!v.title && !v.text) { $("#formError").textContent = "Give it a title or a note first."; return false; }
+          const firstLine = (v.text || "").split("\n").find((l) => l.trim()) || "";
+          const id = Store.uid();
+          Store.upsert("projects", {
+            id, name: (v.title || firstLine).trim().slice(0, 80), description: v.text || "", status: "seed", ink: v.ink || "",
+            start: todayStr(), target: "", budget: 0, milestones: [], createdAt: new Date().toISOString(),
+          });
+          const err = saveIdea({ ...v, projectId: id }, true);
+          if (err) { $("#formError").textContent = err; return false; }
+          toast("A new working begins. ✦");
+          location.hash = `workings/${id}`;
+          return true;
+        } }]),
+      ],
+      onSubmit: (v) => saveIdea(v),
       onDelete: isNew ? null : () => {
         if (idea.imageId) Images.del(idea.imageId).catch(() => {});
         Store.remove("ideas", idea.id);
@@ -1676,6 +1717,7 @@
         ${i.link ? `<a class="scrap-link" href="${esc(i.link)}" target="_blank" rel="noopener noreferrer">↗ ${esc(domainOf(i.link))}</a>` : ""}
       </div>` : ""}
       <div class="scrap-foot">
+        ${projectChip(i.projectId)}
         ${i.shelf ? `<span class="tag shelf">${esc(i.shelf)}</span>` : ""}
         ${(i.tags || []).map((t) => `<span class="hashtag">#${esc(t)}</span>`).join("")}
         <span class="when">${esc(fmtDate(ymd(new Date(i.createdAt || Date.now())), { month: "short", day: "numeric" }))}</span>
@@ -1766,6 +1808,417 @@
     if (currentView() !== "cabinet" || !e.dataTransfer?.files?.length) return;
     e.preventDefault();
     addImageIdeas(e.dataTransfer.files);
+  });
+
+  /* ── Workings: projects, their timeline, and the content calendar ── */
+  const PROJECT_STATUS = [
+    ["seed", "Seed", "an idea, not yet begun"],
+    ["brewing", "Brewing", "planning and gathering"],
+    ["working", "Working", "in progress"],
+    ["resting", "Resting", "paused for now"],
+    ["complete", "Complete", "done"],
+  ];
+  const ACTIVE_STATUS = new Set(["seed", "brewing", "working"]);
+  const CONTENT_STATUS = [["idea", "Idea"], ["drafting", "Drafting"], ["ready", "Ready"], ["scheduled", "Scheduled"], ["posted", "Posted"]];
+  const PLATFORMS = ["Instagram", "TikTok", "Pinterest", "YouTube", "Facebook", "Threads", "Newsletter", "Blog", "Website"];
+  const FORMATS = ["Post", "Carousel", "Reel", "Story", "Video", "Live", "Article", "Email", "Pin"];
+  const labelOf = (list, k) => (list.find(([v]) => v === k) || [, k || ""])[1];
+  const projectById = (id) => D().projects.find((p) => p.id === id);
+  const daysBetween = (a, b) => Math.round((parseYmd(b) - parseYmd(a)) / 864e5);
+
+  // active projects first; a finished one still shows if the record is already linked to it
+  function projectOptions(current = "") {
+    const list = D().projects
+      .filter((p) => ACTIVE_STATUS.has(p.status) || p.id === current)
+      .sort((a, b) => a.name.localeCompare(b.name));
+    return [{ value: "", label: "— none —" }, ...list.map((p) => ({ value: p.id, label: p.name }))];
+  }
+  const projectChip = (id) => {
+    const p = id && projectById(id);
+    return p ? `<a class="proj-chip ink-${esc(p.ink || "")}" href="#workings/${esc(p.id)}" title="Project: ${esc(p.name)}">⚗ ${esc(p.name)}</a>` : "";
+  };
+
+  function projectStats(p) {
+    const tasks = D().tasks.filter((t) => t.projectId === p.id);
+    const ms = (p.milestones || []).slice().sort((a, b) => (a.date || "9999").localeCompare(b.date || "9999"));
+    const content = D().content.filter((c) => c.projectId === p.id);
+    const txs = D().transactions.filter((t) => t.projectId === p.id);
+    const spent = txs.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
+    const earned = txs.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
+    const doneT = tasks.filter((t) => t.done).length, doneM = ms.filter((m) => m.done).length;
+    const total = tasks.length + ms.length;
+    const progress = p.status === "complete" ? 1 : total ? (doneT + doneM) / total : 0;
+    const nextMs = ms.find((m) => !m.done);
+    return { tasks, ms, content, txs, spent, earned, doneT, doneM, progress, nextMs };
+  }
+
+  const dateRange = (p) => {
+    if (!p.start && !p.target) return "no dates yet";
+    const f = (d) => fmtDate(d, { month: "short", day: "numeric", year: parseYmd(d).getFullYear() === new Date().getFullYear() ? undefined : "numeric" });
+    if (p.start && p.target) return `${f(p.start)} → ${f(p.target)}`;
+    return p.start ? `from ${f(p.start)}` : `by ${f(p.target)}`;
+  };
+
+  function editProject(p = {}) {
+    const isNew = !p.id;
+    openForm({
+      title: isNew ? "Begin a Working" : "Amend the Working",
+      values: { status: "seed", ink: "", start: todayStr(), ...p },
+      fields: [
+        { name: "name", label: "Name", required: true, placeholder: "e.g. The Iris Wrap Dress", span2: true },
+        { name: "description", label: "Intention", type: "textarea", placeholder: "what it is, and why it matters", span2: true },
+        { name: "status", label: "Stage", type: "select", options: PROJECT_STATUS.map(([value, label, hint]) => ({ value, label: `${label} · ${hint}` })), span2: true },
+        { name: "start", label: "Begins", type: "date" },
+        { name: "target", label: "Aiming for", type: "date" },
+        { name: "budget", label: "Budget", type: "number", placeholder: "optional" },
+        { name: "ink", label: "Ink", type: "segmented", options: INKS.map(([value, label]) => ({ value, label })), span2: true },
+      ],
+      onSubmit: (v) => {
+        if (v.start && v.target && v.target < v.start) return "It has to end after it begins.";
+        const id = p.id || Store.uid();
+        Store.upsert("projects", { milestones: [], ...p, ...v, id, budget: v.budget === "" ? 0 : v.budget, ...(isNew ? { createdAt: new Date().toISOString() } : {}) });
+        toast(isNew ? "A new working begins. ✦" : "Saved.");
+        if (isNew) location.hash = `workings/${id}`;
+      },
+      onDelete: isNew ? null : () => {
+        Store.remove("projects", p.id);
+        toast("Working removed. Its tasks, ideas, posts and entries are kept, unlinked.");
+        location.hash = "workings";
+      },
+    });
+  }
+
+  /* milestones live inside their project, like steps inside a task */
+  function updateMilestones(projectId, fn) {
+    const p = projectById(projectId);
+    if (!p) return;
+    Store.upsert("projects", { id: projectId, milestones: fn((p.milestones || []).map((m) => ({ ...m }))) });
+  }
+  function editMilestone(projectId, m) {
+    openForm({
+      title: "Milestone",
+      values: { done: m.done ? "yes" : "no", ...m },
+      fields: [
+        { name: "title", label: "Milestone", required: true, span2: true },
+        { name: "date", label: "When", type: "date" },
+        { name: "done", label: "Reached", type: "segmented", options: [{ value: "no", label: "Not yet" }, { value: "yes", label: "Reached" }] },
+      ],
+      onSubmit: (v) => { updateMilestones(projectId, (list) => list.map((x) => (x.id === m.id ? { ...x, title: v.title, date: v.date, done: v.done === "yes" } : x))); },
+      onDelete: () => { updateMilestones(projectId, (list) => list.filter((x) => x.id !== m.id)); toast("Milestone removed."); },
+    });
+  }
+
+  function editContent(c = {}) {
+    const isNew = !c.id;
+    openForm({
+      title: isNew ? "Plan a Post" : "Post",
+      values: { status: "idea", date: "", ...c },
+      fields: [
+        { name: "title", label: "What it is", required: true, placeholder: "e.g. velvet swatch reveal", span2: true },
+        { name: "date", label: "Goes out", type: "date" },
+        { name: "time", label: "At", type: "time" },
+        { name: "platform", label: "Where", placeholder: "Instagram, TikTok…", datalist: PLATFORMS },
+        { name: "format", label: "Format", placeholder: "Reel, carousel…", datalist: FORMATS },
+        { name: "status", label: "Stage", type: "select", options: CONTENT_STATUS.map(([value, label]) => ({ value, label })) },
+        { name: "projectId", label: "Project", type: "select", options: projectOptions(c.projectId) },
+        { name: "notes", label: "Caption & notes", type: "textarea", placeholder: "hook, caption, shot list, hashtags…", span2: true },
+        { name: "link", label: "Link once it's posted", type: "url", placeholder: "https://…", span2: true },
+      ],
+      onSubmit: (v) => {
+        Store.upsert("content", { ...c, ...v });
+        toast(isNew ? "Added to the content calendar." : "Saved.");
+      },
+      onDelete: isNew ? null : () => { Store.remove("content", c.id); toast("Post removed."); },
+    });
+  }
+
+  const contentLi = (c, { showProject = true } = {}) => `<li data-content="${c.id}" style="cursor:pointer">
+      ${c.date ? dateChip(c.date) : `<div class="date-chip undated"><span class="m">—</span><span class="d">?</span></div>`}
+      <div class="grow"><span class="title">${esc(c.title)}</span>
+        <span class="meta">${[c.platform, c.format].filter(Boolean).map(esc).join(" · ") || "<i>platform not set</i>"}${c.time ? ` · ${esc(fmtTime(c.time))}` : ""}${showProject && c.projectId ? ` · ${projectChip(c.projectId)}` : ""}</span></div>
+      <span class="tag cstatus ${esc(c.status || "idea")}">${esc(labelOf(CONTENT_STATUS, c.status || "idea"))}</span>
+    </li>`;
+
+  function projectCard(p) {
+    const st = projectStats(p), pct = Math.round(st.progress * 100);
+    return `<article class="card project-card ink-${esc(p.ink || "")}" data-open-project="${p.id}" tabindex="0">
+      <div class="project-head"><h3>${esc(p.name)}</h3><span class="tag pstatus ${esc(p.status)}">${esc(labelOf(PROJECT_STATUS, p.status))}</span></div>
+      ${p.description ? `<p class="project-desc">${esc(p.description)}</p>` : ""}
+      <div class="bar"><span style="width:${pct}%"></span></div>
+      <p class="project-meta"><b>${pct}%</b> · ${st.doneM}/${st.ms.length} milestones · ${st.doneT}/${st.tasks.length} tasks · ${st.content.length} post${st.content.length === 1 ? "" : "s"}</p>
+      <p class="project-meta">${esc(dateRange(p))}${st.nextMs ? ` · next: <span class="${st.nextMs.date && st.nextMs.date < todayStr() ? "neg" : "gold"}">${esc(st.nextMs.title)}</span>${st.nextMs.date ? `, ${esc(relDay(st.nextMs.date))}` : ""}` : ""}</p>
+      ${p.budget ? `<p class="project-meta">Spent ${money(st.spent)} of ${money(p.budget)}</p>` : st.spent ? `<p class="project-meta">Spent ${money(st.spent)}</p>` : ""}
+    </article>`;
+  }
+
+  /* a project's own page */
+  function projectPage(p) {
+    const st = projectStats(p), pct = Math.round(st.progress * 100), today = todayStr();
+    const openTasksOf = st.tasks.filter((t) => !t.done).sort(bySuggested);
+    const doneTasks = st.tasks.filter((t) => t.done).length;
+    const ideas = D().ideas.filter((i) => i.projectId === p.id);
+    const content = st.content.slice().sort((a, b) => (a.date || "9999").localeCompare(b.date || "9999"));
+    // the path: everything dated, in order, with today marked
+    const path = [
+      ...(p.start ? [{ date: p.start, kind: "start", title: "The working begins" }] : []),
+      ...st.ms.filter((m) => m.date).map((m) => ({ date: m.date, kind: "ms", title: m.title, done: m.done, id: m.id })),
+      ...content.filter((c) => c.date).map((c) => ({ date: c.date, kind: "post", title: c.title, sub: [c.platform, c.format].filter(Boolean).join(" · "), status: c.status, id: c.id })),
+      ...st.tasks.filter((t) => t.due && !t.done).map((t) => ({ date: t.due, kind: "task", title: t.title, id: t.id })),
+      ...(p.target ? [{ date: p.target, kind: "target", title: "Aiming to finish" }] : []),
+    ].sort((a, b) => a.date.localeCompare(b.date));
+    const todayAt = path.findIndex((x) => x.date >= today);
+    if (path.length) path.splice(todayAt < 0 ? path.length : todayAt, 0, { date: today, kind: "today", title: "Today" });
+    const pathLi = (x) => {
+      const mark = { start: "✦", target: "✧", ms: x.done ? "◆" : "◇", post: "✎", task: "☐", today: "☾" }[x.kind];
+      const attrs = x.kind === "ms" ? `data-ms="${x.id}"` : x.kind === "post" ? `data-content="${x.id}"` : x.kind === "task" ? `data-task="${x.id}"` : "";
+      return `<li class="path-${x.kind} ${x.done ? "done" : ""} ${x.date < today && x.kind !== "today" ? "past" : ""}" ${attrs}>
+        <span class="path-mark">${mark}</span>
+        <span class="path-date">${x.kind === "today" ? "" : esc(fmtDate(x.date, { month: "short", day: "numeric" }))}</span>
+        <span class="path-title">${esc(x.title)}${x.sub ? ` <small>${esc(x.sub)}</small>` : ""}${x.kind === "post" ? ` <span class="tag cstatus ${esc(x.status)}">${esc(labelOf(CONTENT_STATUS, x.status))}</span>` : ""}</span>
+      </li>`;
+    };
+    const remaining = p.target ? daysBetween(today, p.target) : null;
+    return `
+      <p style="margin:-10px 0 14px"><a href="#workings" class="back-link">← All workings</a></p>
+      <div class="card project-hero ink-${esc(p.ink || "")}">
+        <div class="card-head"><h2>${esc(labelOf(PROJECT_STATUS, p.status))}</h2><button class="btn sm" data-act="edit-project" data-id="${p.id}">Amend</button></div>
+        ${p.description ? `<p class="hero-desc">${esc(p.description)}</p>` : ""}
+        <div class="bar"><span style="width:${pct}%"></span></div>
+        <div class="hero-stats">
+          <span><b>${pct}%</b> complete</span>
+          <span>${esc(dateRange(p))}${remaining !== null && p.status !== "complete" ? ` · <span class="${remaining < 0 ? "neg" : ""}">${remaining < 0 ? `${-remaining} days past the aim` : `${remaining} days to go`}</span>` : ""}</span>
+          <span>${p.budget ? `${money(st.spent)} of ${money(p.budget)} spent` : `${money(st.spent)} spent`}${st.earned ? ` · ${money(st.earned)} earned` : ""}</span>
+        </div>
+      </div>
+      <div class="grid split" style="margin-top:18px">
+        <div class="grid" style="align-content:start">
+          <div class="card">
+            <div class="card-head"><h2>The path</h2><small>milestones, posts & deadlines in order</small></div>
+            ${path.length > 1 ? `<ol class="path">${path.map(pathLi).join("")}</ol>` : empty("✦", "Add milestones, posts or dated tasks and the path appears here.")}
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>Tasks</h2><small>${doneTasks}/${st.tasks.length} done</small></div>
+            <form class="inline-add" id="projTaskAdd" autocomplete="off"><input name="title" placeholder="Add a task to this working…" aria-label="New task"><input name="due" type="date" aria-label="Due"><button class="btn sm" type="submit">Add</button></form>
+            ${openTasksOf.length ? `<ul class="list tasks">${openTasksOf.map((t) => taskLi(t, { showProject: false })).join("")}</ul>` : `<p class="arcana-empty">${st.tasks.length ? "Every task is done. ✦" : "No tasks yet."}</p>`}
+          </div>
+        </div>
+        <div class="grid" style="align-content:start">
+          <div class="card">
+            <div class="card-head"><h2>Milestones</h2><small>${st.doneM}/${st.ms.length}</small></div>
+            ${st.ms.length ? `<ul class="list milestones">${st.ms.map((m) => `<li class="${m.done ? "done" : ""}">
+                <button class="check-btn sm" data-toggle-ms="${m.id}" role="checkbox" aria-checked="${!!m.done}" aria-label="${m.done ? "Not reached" : "Reached"}: ${esc(m.title)}"><span>✦</span></button>
+                <div class="grow" data-ms="${m.id}" style="cursor:pointer"><span class="title">${esc(m.title)}</span><span class="meta">${m.date ? `${esc(fmtDate(m.date))} · ${esc(relDay(m.date))}` : "no date"}</span></div>
+              </li>`).join("")}</ul>` : ""}
+            <form class="inline-add" id="msAdd" autocomplete="off"><input name="title" placeholder="Add a milestone…" aria-label="New milestone"><input name="date" type="date" aria-label="When"><button class="btn sm" type="submit">Add</button></form>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>Content</h2><button class="btn sm" data-act="add-content-project" data-id="${p.id}">+ Post</button></div>
+            ${content.length ? `<ul class="list">${content.map((c) => contentLi(c, { showProject: false })).join("")}</ul>` : `<p class="arcana-empty">Nothing planned yet.</p>`}
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>Curiosities</h2><button class="btn sm" data-act="add-idea-project" data-id="${p.id}">+ Add</button></div>
+            ${ideas.length ? `<div class="mini-board">${ideas.map((i) => `<button class="mini-scrap ink-${esc(i.ink || "")}" data-idea-open="${i.id}" title="${esc(i.title || i.text.slice(0, 80))}">
+                ${i.imageId ? `<span class="mini-img">${imgTag(i.imageId, i.title)}</span>` : ""}<span class="mini-text">${esc(i.title || i.text.split("\n")[0] || domainOf(i.link))}</span></button>`).join("")}</div>`
+              : `<p class="arcana-empty">Link moodboard images and notes from the Cabinet, or add them here.</p>`}
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>Coffers</h2><button class="btn sm" data-act="add-expense-project" data-id="${p.id}">+ Expense</button></div>
+            ${p.budget ? `<div class="bar ${st.spent > p.budget ? "over" : st.spent > p.budget * 0.8 ? "warn" : ""}"><span style="width:${Math.min(100, (st.spent / p.budget) * 100)}%"></span></div>
+              <p class="project-meta">${money(st.spent)} of ${money(p.budget)} · ${st.spent > p.budget ? `<span class="neg">${money(st.spent - p.budget)} over</span>` : `${money(p.budget - st.spent)} left`}</p>` : ""}
+            ${st.txs.length ? `<ul class="list">${st.txs.slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 6).map(txLi).join("")}</ul>` : `<p class="arcana-empty">Ledger entries linked to this working appear here.</p>`}
+          </div>
+        </div>
+      </div>`;
+  }
+
+  /* every working on one timeline, month by month */
+  function timelineView() {
+    const projects = D().projects.filter((p) => p.status !== "complete" || ui.timelineAll).sort((a, b) => (a.start || a.target || "9999").localeCompare(b.start || b.target || "9999"));
+    const today = todayStr();
+    const datesOf = (p) => [p.start, p.target, ...(p.milestones || []).map((m) => m.date), ...D().content.filter((c) => c.projectId === p.id).map((c) => c.date)].filter(Boolean);
+    const all = projects.flatMap(datesOf);
+    if (!projects.length) return `<div class="card">${empty("⚗", "No workings yet. Begin one, or turn a curiosity into one from the Cabinet.")}</div>`;
+    const min = [stepDays(today, -15), ...all].sort()[0], max = [stepDays(today, 45), ...all].sort().pop();
+    let from = new Date(parseYmd(min).getFullYear(), parseYmd(min).getMonth(), 1);
+    let to = new Date(parseYmd(max).getFullYear(), parseYmd(max).getMonth() + 1, 0);
+    if ((to - from) / 864e5 > 730) to = new Date(from.getFullYear() + 2, from.getMonth(), 0); // keep it to two years
+    const span = (to - from) / 864e5 + 1;
+    const x = (d) => Math.max(0, Math.min(100, ((parseYmd(d) - from) / 864e5 / span) * 100));
+    const months = [];
+    for (let d = new Date(from); d <= to; d = new Date(d.getFullYear(), d.getMonth() + 1, 1)) months.push(new Date(d));
+    const monthMarks = months.map((m) => `<span class="g-month" style="left:${x(ymd(m))}%">${m.getMonth() === 0 || m === months[0] ? `${MONTHS[m.getMonth()].slice(0, 3)} ${m.getFullYear()}` : MONTHS[m.getMonth()].slice(0, 3)}</span>`).join("");
+    const gridLines = months.map((m) => `<span class="g-line" style="left:${x(ymd(m))}%"></span>`).join("") + `<span class="g-today" style="left:${x(today)}%" title="Today"></span>`;
+    const rows = projects.map((p) => {
+      const st = projectStats(p);
+      const d = datesOf(p).sort();
+      const a = p.start || d[0], b = p.target || d[d.length - 1];
+      const bar = a ? `<a class="g-bar ink-${esc(p.ink || "")} ${esc(p.status)}" href="#workings/${esc(p.id)}" style="left:${x(a)}%;width:${Math.max(0.8, x(b || a) - x(a))}%" title="${esc(p.name)}: ${esc(dateRange(p))}"><span class="g-fill" style="width:${Math.round(st.progress * 100)}%"></span></a>` : "";
+      const ms = st.ms.filter((m) => m.date).map((m) => `<span class="g-ms ${m.done ? "done" : ""} ${!m.done && m.date < today ? "late" : ""}" style="left:${x(m.date)}%" title="${esc(m.title)} · ${esc(fmtDate(m.date))}${m.done ? " · reached" : ""}"></span>`).join("");
+      const posts = st.content.filter((c) => c.date).map((c) => `<span class="g-post ${esc(c.status)}" style="left:${x(c.date)}%" title="${esc(c.title)} · ${esc(fmtDate(c.date))} · ${esc(labelOf(CONTENT_STATUS, c.status))}"></span>`).join("");
+      return `<div class="g-label"><a href="#workings/${esc(p.id)}">${esc(p.name)}</a><small>${esc(labelOf(PROJECT_STATUS, p.status))}${a ? "" : " · no dates"}</small></div>
+        <div class="g-track">${gridLines}${bar}${ms}${posts}</div>`;
+    }).join("");
+    return `<div class="card timeline-card">
+        <div class="gantt-wrap"><div class="gantt" style="min-width:${150 + months.length * 96}px">
+          <div class="g-label g-corner"></div><div class="g-track g-head">${monthMarks}</div>
+          ${rows}
+        </div></div>
+        <p class="cal-key"><span><span class="g-key bar"></span> working, filled as it progresses</span><span><span class="g-key ms"></span> milestone</span><span><span class="g-key ms done"></span> reached</span><span><span class="g-key post"></span> post</span><span><span class="g-key today"></span> today</span></p>
+      </div>
+      <label class="check" style="margin-top:12px"><input type="checkbox" id="timelineAll" ${ui.timelineAll ? "checked" : ""}> Include completed workings</label>`;
+  }
+
+  /* the content calendar: a month of posts, or a pipeline by stage */
+  function contentView() {
+    const m = ui.contentMonth;
+    const filter = (c) => ui.contentProject === "all" || (ui.contentProject === "none" ? !c.projectId : c.projectId === ui.contentProject);
+    const items = D().content.filter(filter);
+    const projOpts = [["all", "All workings"], ["none", "Not linked"], ...D().projects.filter((p) => ACTIVE_STATUS.has(p.status) || items.some((c) => c.projectId === p.id)).map((p) => [p.id, p.name])];
+    const head = `<div class="toolbar">
+        <div class="segmented" data-ui="contentView">${[["calendar", "Calendar"], ["pipeline", "Pipeline"]].map(([v, l]) => `<button class="${ui.contentView === v ? "on" : ""}" data-value="${v}">${l}</button>`).join("")}</div>
+        ${ui.contentView === "calendar" ? `<div class="month-nav"><button class="icon-btn" data-cmonth="-1" aria-label="Previous month">‹</button><span>${monthLabel(m)}</span><button class="icon-btn" data-cmonth="1" aria-label="Next month">›</button></div>` : ""}
+        <span class="spacer"></span>
+        <select id="contentProject" aria-label="Filter by working" style="width:auto">${projOpts.map(([v, l]) => `<option value="${esc(v)}" ${ui.contentProject === v ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>
+      </div>`;
+    if (ui.contentView === "pipeline") {
+      const cutoff = stepDays(todayStr(), -30);
+      const cols = CONTENT_STATUS.map(([k, label]) => {
+        const list = items.filter((c) => (c.status || "idea") === k && (k !== "posted" || !c.date || c.date >= cutoff)).sort((a, b) => (a.date || "9999").localeCompare(b.date || "9999"));
+        return `<div class="card pipe-col"><div class="card-head"><h2><span class="tag cstatus ${k}">${label}</span></h2><small>${list.length}</small></div>
+          ${list.length ? `<ul class="list">${list.map((c) => contentLi(c)).join("")}</ul>` : `<p class="arcana-empty">—</p>`}</div>`;
+      }).join("");
+      return head + `<div class="pipeline">${cols}</div><p class="capture-hint">Posted items from the last 30 days are shown.</p>`;
+    }
+    const ws = Number(D().settings.weekStart) || 0;
+    const first = new Date(m.getFullYear(), m.getMonth(), 1);
+    const start = new Date(first);
+    start.setDate(1 - ((first.getDay() - ws + 7) % 7));
+    const byDate = {};
+    items.filter((c) => c.date).forEach((c) => (byDate[c.date] = byDate[c.date] || []).push(c));
+    const msBy = {};
+    D().projects.filter((p) => ACTIVE_STATUS.has(p.status) && (ui.contentProject === "all" || ui.contentProject === p.id))
+      .forEach((p) => (p.milestones || []).filter((x) => x.date).forEach((x) => (msBy[x.date] = msBy[x.date] || []).push({ p, m: x })));
+    const today = todayStr();
+    let cells = "";
+    for (let i = 0; i < 42; i++) {
+      const d = new Date(start); d.setDate(start.getDate() + i);
+      if (i === 35 && d.getMonth() !== m.getMonth()) break;
+      const s = ymd(d), evs = byDate[s] || [], mss = msBy[s] || [];
+      const chips = [
+        ...mss.map(({ p, m: x }) => `<span class="ev msev ${x.done ? "done" : ""}" title="Milestone: ${esc(x.title)} (${esc(p.name)})">◆ ${esc(x.title)}</span>`),
+        ...evs.map((c) => `<span class="ev cs-${esc(c.status || "idea")}" data-content="${c.id}" title="${esc(c.title)} · ${esc([c.platform, c.format].filter(Boolean).join(" · "))} · ${esc(labelOf(CONTENT_STATUS, c.status))}">${esc(c.title)}</span>`),
+      ];
+      const cls = ["day", d.getMonth() !== m.getMonth() && "other", s === today && "today", s === ui.contentDay && "selected"].filter(Boolean).join(" ");
+      cells += `<div class="${cls}" data-cday="${s}" role="button" tabindex="0" aria-label="${fmtDate(s, { weekday: "long", month: "long", day: "numeric" })}, ${evs.length} posts">
+        <span class="num"><span>${d.getDate()}</span>${s === today ? "<span>✦</span>" : ""}</span>${chips.slice(0, 3).join("")}${chips.length > 3 ? `<span class="more">+${chips.length - 3} more</span>` : ""}</div>`;
+    }
+    const dows = Array.from({ length: 7 }, (_, i) => `<div class="dow">${DOW[(i + ws) % 7]}</div>`).join("");
+    const day = ui.contentDay, dayItems = (byDate[day] || []), dayMs = msBy[day] || [];
+    const undated = items.filter((c) => !c.date && c.status !== "posted");
+    return head + `<div class="grid split">
+        <div class="card"><div class="calendar content-cal">${dows}${cells}</div>
+          <p class="cal-key">${CONTENT_STATUS.map(([k, l]) => `<span class="ev cs-${k}">${l}</span>`).join("")}<span class="ev msev">◆ milestone</span></p></div>
+        <div class="grid" style="align-content:start">
+          <div class="card">
+            <div class="card-head"><h2>${fmtDate(day, { weekday: "long", month: "long", day: "numeric" })}</h2><button class="btn sm" data-act="add-content-day">+ Post</button></div>
+            ${dayMs.map(({ p, m: x }) => `<p class="ms-line">◆ <b>${esc(x.title)}</b> · ${projectChip(p.id)}</p>`).join("")}
+            ${dayItems.length ? `<ul class="list">${dayItems.map((c) => contentLi(c)).join("")}</ul>` : dayMs.length ? "" : empty("✎", "Nothing planned this day.")}
+          </div>
+          ${undated.length ? `<div class="card"><div class="card-head"><h2>Not yet scheduled</h2><small>${undated.length}</small></div><ul class="list">${undated.map((c) => contentLi(c)).join("")}</ul></div>` : ""}
+        </div>
+      </div>`;
+  }
+
+  views.workings = {
+    title: () => { const p = routeParam() && projectById(routeParam()); return p ? p.name : "Workings"; },
+    actions: () => {
+      if (routeParam() && projectById(routeParam())) return `<button class="btn" data-act="add-content-project" data-id="${esc(routeParam())}">+ Post</button>`;
+      return ui.workTab === "content" ? `<button class="btn primary" data-act="add-content-day">+ Post</button>` : `<button class="btn primary" data-act="add-project">+ Working</button>`;
+    },
+    render() {
+      const id = routeParam();
+      if (id) {
+        const p = projectById(id);
+        return p ? projectPage(p) : `<div class="card">${empty("⚗", "That working isn't here any more. <a href=\"#workings\">See all workings</a>.")}</div>`;
+      }
+      const tabs = `<div class="toolbar"><div class="segmented" data-ui="workTab">${[["projects", "Projects"], ["timeline", "Timeline"], ["content", "Content calendar"]].map(([v, l]) => `<button class="${ui.workTab === v ? "on" : ""}" data-value="${v}">${l}</button>`).join("")}</div></div>`;
+      if (ui.workTab === "timeline") return tabs + timelineView();
+      if (ui.workTab === "content") return tabs + contentView();
+      const groups = { active: (p) => ACTIVE_STATUS.has(p.status), resting: (p) => p.status === "resting", complete: (p) => p.status === "complete", all: () => true };
+      const list = D().projects.filter(groups[ui.workStatus] || groups.active)
+        .sort((a, b) => PROJECT_STATUS.findIndex(([k]) => k === b.status) - PROJECT_STATUS.findIndex(([k]) => k === a.status) || (a.target || "9999").localeCompare(b.target || "9999"));
+      const chip = (v, label) => `<button class="shelf-chip ${ui.workStatus === v ? "on" : ""}" data-wstatus="${v}">${label}<span>${D().projects.filter(groups[v]).length}</span></button>`;
+      return tabs + `<div class="toolbar"><div class="shelves">${chip("active", "Active")}${chip("resting", "Resting")}${chip("complete", "Complete")}${chip("all", "All")}</div></div>
+        ${list.length ? `<div class="grid cols-2 project-grid">${list.map(projectCard).join("")}</div>`
+          : `<div class="card">${empty("⚗", D().projects.length ? "None here." : "No workings yet. A working is an idea you've started to carry out: a collection, a launch, a new service. Begin one here, or from a curiosity in the Cabinet.")}</div>`}`;
+    },
+    bind(root) {
+      bindSegments(root);
+      $$("[data-wstatus]", root).forEach((b) => b.addEventListener("click", () => { ui.workStatus = b.dataset.wstatus; render(); }));
+      $$("[data-open-project]", root).forEach((c) => {
+        const go = () => (location.hash = `workings/${c.dataset.openProject}`);
+        c.addEventListener("click", (e) => { if (!e.target.closest("a")) go(); });
+        c.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+      });
+      const ta = $("#timelineAll", root);
+      if (ta) ta.addEventListener("change", () => { ui.timelineAll = ta.checked; render(); });
+      const cp = $("#contentProject", root);
+      if (cp) cp.addEventListener("change", () => { ui.contentProject = cp.value; render(); });
+      $$("[data-cmonth]", root).forEach((b) => b.addEventListener("click", () => {
+        ui.contentMonth = addMonths(ui.contentMonth, +b.dataset.cmonth);
+        ui.contentDay = monthKey(ui.contentMonth) === monthKey(new Date()) ? todayStr() : ymd(ui.contentMonth);
+        render();
+      }));
+      $$("[data-cday]", root).forEach((d) => {
+        d.addEventListener("click", () => {
+          ui.contentDay = d.dataset.cday;
+          if (d.dataset.cday.slice(0, 7) !== monthKey(ui.contentMonth)) ui.contentMonth = new Date(+d.dataset.cday.slice(0, 4), +d.dataset.cday.slice(5, 7) - 1, 1);
+          render();
+        });
+        d.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); d.click(); } });
+      });
+      // on a project's page
+      const id = routeParam();
+      $$("[data-tx]", root).forEach((li) => li.addEventListener("click", () => editTransaction(D().transactions.find((t) => t.id === li.dataset.tx))));
+      const msAdd = $("#msAdd", root);
+      if (msAdd) msAdd.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const f = new FormData(msAdd), title = String(f.get("title") || "").trim();
+        if (!title) return;
+        updateMilestones(id, (list) => [...list, { id: Store.uid(), title, date: f.get("date") || "", done: false }]);
+        $("#msAdd input[name=title]").focus();
+      });
+      const tAdd = $("#projTaskAdd", root);
+      if (tAdd) tAdd.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const f = new FormData(tAdd), title = String(f.get("title") || "").trim();
+        if (!title) return;
+        Store.upsert("tasks", { title, due: f.get("due") || "", scope: "business", clientId: "", notes: "", done: false, doneAt: "", subtasks: [], projectId: id, ...quadrantFields("") });
+        $("#projTaskAdd input[name=title]").focus();
+      });
+    },
+  };
+
+  // milestones, posts and linked curiosities open wherever they're listed
+  document.addEventListener("click", (e) => {
+    const tick = e.target.closest("[data-toggle-ms]");
+    if (tick) {
+      const pid = routeParam(), mid = tick.dataset.toggleMs;
+      updateMilestones(pid, (list) => list.map((m) => (m.id === mid ? { ...m, done: !m.done } : m)));
+      return;
+    }
+    const ms = e.target.closest("[data-ms]");
+    if (ms) {
+      const p = projectById(routeParam());
+      const m = p && (p.milestones || []).find((x) => x.id === ms.dataset.ms);
+      if (m) editMilestone(p.id, m);
+      return;
+    }
+    if (e.target.closest("a")) return;
+    const c = e.target.closest("[data-content]");
+    if (c) { e.stopPropagation(); editContent(D().content.find((x) => x.id === c.dataset.content)); return; }
+    const io = e.target.closest("[data-idea-open]");
+    if (io) editIdea(D().ideas.find((x) => x.id === io.dataset.ideaOpen));
   });
 
   /* ── sync across devices ──────────────────── */
@@ -1937,6 +2390,12 @@
     "add-category": () => editCategory(),
     "add-task": () => editTask({ scope: ui.agendaScope === "business" ? "business" : "personal" }),
     "add-idea": () => editIdea(),
+    "add-project": () => editProject(),
+    "edit-project": (b) => editProject(projectById(b.dataset.id)),
+    "add-content-day": () => editContent({ date: ui.workTab === "content" && currentView() === "workings" ? ui.contentDay : "", projectId: ui.contentProject !== "all" && ui.contentProject !== "none" ? ui.contentProject : "" }),
+    "add-content-project": (b) => editContent({ projectId: b.dataset.id }),
+    "add-idea-project": (b) => editIdea({ projectId: b.dataset.id, shelf: "" }),
+    "add-expense-project": (b) => editTransaction({ type: "expense", scope: "business", projectId: b.dataset.id }),
     "draw-card": () => {
       const current = ui.draw ? ui.draw.cardId : Tarot.cardOfDay(todayStr()).id;
       const card = Tarot.draw(current);
@@ -1984,7 +2443,7 @@
   };
   document.addEventListener("click", (e) => {
     const b = e.target.closest("[data-act]");
-    if (b && actions[b.dataset.act]) return actions[b.dataset.act]();
+    if (b && actions[b.dataset.act]) return actions[b.dataset.act](b);
     // tasks behave the same wherever they're listed
     const tick = e.target.closest("[data-toggle-task]");
     if (tick) return toggleTask(tick.dataset.toggleTask);
@@ -2020,15 +2479,18 @@
 
   /* ── chrome: router, sidebar, moon ─────────── */
   function currentView() {
-    const v = location.hash.replace("#", "");
+    const v = location.hash.replace("#", "").split("/")[0];
     return views[v] ? v : "sanctum";
   }
+  // the part after the view, e.g. a project's id in #workings/<id>
+  const routeParam = () => decodeURIComponent(location.hash.replace("#", "").split("/")[1] || "");
 
   function render() {
     const name = currentView();
     const v = views[name];
-    $("#viewTitle").textContent = v.title;
-    document.title = `${v.title} · 3rd Iris`;
+    const title = typeof v.title === "function" ? v.title() : v.title;
+    $("#viewTitle").textContent = title;
+    document.title = `${title} · 3rd Iris`;
     $("#topbarActions").innerHTML = v.actions();
     const root = $("#view");
     root.innerHTML = v.render();

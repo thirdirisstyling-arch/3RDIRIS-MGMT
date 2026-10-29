@@ -15,7 +15,7 @@
 
   const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   const now = () => new Date().toISOString();
-  const COLLECTIONS = ["categories", "transactions", "appointments", "clients", "tasks", "ideas"];
+  const COLLECTIONS = ["categories", "transactions", "appointments", "clients", "tasks", "ideas", "projects", "content"];
   // a record's last change; older data without timestamps counts as oldest
   const stamp = (r) => r.updatedAt || r.createdAt || "";
 
@@ -30,6 +30,8 @@
       clients: [],
       tasks: [],
       ideas: [], // the Cabinet: notes, images and links
+      projects: [], // Workings: ideas being carried out, with milestones
+      content: [], // the content calendar
       deleted: [], // tombstones { c: collection, id, at } so deletions sync too
     };
   }
@@ -57,6 +59,8 @@
       clients: Array.isArray(d.clients) ? d.clients : [],
       tasks: Array.isArray(d.tasks) ? d.tasks : [],
       ideas: Array.isArray(d.ideas) ? d.ideas : [],
+      projects: Array.isArray(d.projects) ? d.projects : [],
+      content: Array.isArray(d.content) ? d.content : [],
       deleted: Array.isArray(d.deleted) ? d.deleted : [],
     };
   }
@@ -97,6 +101,8 @@
     const unlink = (list, field) => list.forEach((r) => { if (gone.has(r[field])) { r[field] = ""; r.updatedAt = at; } });
     if (collection === "clients") ["appointments", "tasks", "transactions"].forEach((c) => unlink(data[c], "clientId"));
     if (collection === "categories") unlink(data.transactions, "categoryId");
+    // a project's tasks, entries, ideas and posts outlive it, just unlinked
+    if (collection === "projects") ["tasks", "transactions", "ideas", "content"].forEach((c) => unlink(data[c], "projectId"));
   }
 
   function remove(collection, id) {
@@ -238,6 +244,31 @@
       { title: "App idea", text: "Client formula cards: keep each client's colour formulas with their history.", shelf: "App ideas", tags: [], ink: "" },
     ].map((x) => ({ link: "", imageId: "", imageW: 0, imageH: 0, imageGist: "", pinned: false, ...x, id: uid(), createdAt: stamp, updatedAt: stamp }));
     data.ideas.push(...ideas);
+
+    // a working in progress, to show how projects, milestones and the content calendar fit together
+    const projectId = uid();
+    const ms = (title, offset, done = false) => ({ id: uid(), title, date: iso(offset), done });
+    data.projects.push({
+      id: projectId, name: "The Iris Wrap Dress", status: "working", ink: "plum",
+      description: "Our first hero piece: an adjustable wrap dress in deadstock velvet, with iris embroidery at the hem. Made to order in five sizes.",
+      start: iso(-14), target: iso(75), budget: 2000,
+      milestones: [ms("Moodboard & sketches", -10, true), ms("Tech pack from the freelancer", 7), ms("First sample", 28), ms("Fit sessions with clients", 42), ms("Pre-order launch", 60), ms("First orders ship", 75)],
+      createdAt: stamp, updatedAt: stamp,
+    });
+    const linked = (t) => ({ notes: "", done: false, doneAt: "", priority: "normal", subtasks: [], important: null, urgent: null, scope: "business", clientId: "", projectId, ...t, id: uid(), createdAt: stamp, updatedAt: stamp });
+    data.tasks.push(
+      linked({ title: "Post the tech pack brief on Pietra", due: iso(1), important: true, urgent: true }),
+      linked({ title: "Order velvet swatches", due: iso(5), important: true, urgent: false }),
+      linked({ title: "Ask three clients to be fit models", due: iso(20), important: true, urgent: false }),
+    );
+    const post = (title, offset, platform, format, status) => ({ id: uid(), title, date: iso(offset), time: "", platform, format, status, projectId, notes: "", link: "", createdAt: stamp, updatedAt: stamp });
+    data.content.push(
+      post("Sketchbook peek: the iris wrap", -3, "Instagram", "Carousel", "posted"),
+      post("Velvet swatch reveal", 4, "TikTok", "Reel", "drafting"),
+      post("Why every piece is adjustable", 11, "Instagram", "Reel", "idea"),
+      post("Sample day, behind the scenes", 30, "Instagram", "Story", "idea"),
+      post("Pre-orders open", 60, "Newsletter", "Email", "idea"),
+    );
     save();
   }
 

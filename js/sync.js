@@ -241,7 +241,7 @@
     const sortKeys = (v) => Array.isArray(v) ? v.map(sortKeys)
       : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sortKeys(v[k])])) : v;
     const copy = JSON.parse(JSON.stringify(d));
-    ["categories", "transactions", "appointments", "clients", "tasks", "ideas"].forEach((c) => (copy[c] || []).sort((a, b) => String(a.id).localeCompare(String(b.id))));
+    ["categories", "transactions", "appointments", "clients", "tasks", "ideas", "projects", "content"].forEach((c) => (copy[c] || []).sort((a, b) => String(a.id).localeCompare(String(b.id))));
     (copy.deleted || []).sort((a, b) => `${a.c}|${a.id}`.localeCompare(`${b.c}|${b.id}`));
     return JSON.stringify(sortKeys(copy));
   }
