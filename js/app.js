@@ -978,7 +978,10 @@
     cabinetShelf: "all",
     codexTab: ["clients", "partnership", "affiliate", "source", "collaborator", "all"].includes(prefs.codexTab) ? prefs.codexTab : "clients",
     codexShowClosed: false,
-    workTab: ["projects", "timeline", "content"].includes(prefs.workTab) ? prefs.workTab : "projects",
+    workTab: ["projects", "timeline", "content", "metrics"].includes(prefs.workTab) ? prefs.workTab : "projects",
+    metricPlatform: "",
+    metricRange: "90",
+    metricKey: "",
     workStatus: "active",
     timelineAll: false,
     contentView: prefs.contentView === "pipeline" ? "pipeline" : "calendar",
@@ -2191,27 +2194,51 @@
     });
   }
 
+  /* lives are posts with the format "Live": a start time, a planned length, and results afterwards */
+  const isLive = (c) => /\blive\b/i.test(c.format || "");
+  const LIVE_RESULTS = [
+    ["liveMinutes", "Minutes live"], ["livePeak", "Peak viewers"], ["liveViewers", "Total viewers"],
+    ["liveFollowers", "New followers"], ["liveGifts", "Gifts (diamonds or $)"], ["liveLikes", "Likes"], ["liveComments", "Comments"],
+  ];
+  const hasResults = (c) => LIVE_RESULTS.some(([k]) => Number(c[k]) > 0);
+
   function editContent(c = {}) {
     const isNew = !c.id;
+    const live = isLive(c);
     openForm({
-      title: isNew ? "Plan a Post" : "Post",
-      values: { status: "idea", date: "", ...c },
+      title: isNew ? (live ? "Plan a Live" : "Plan a Post") : live ? "Live" : "Post",
+      values: { status: "idea", date: "", repeat: "1", ...c },
       fields: [
-        { name: "title", label: "What it is", required: true, placeholder: "e.g. velvet swatch reveal", span2: true },
+        { name: "title", label: "What it is", required: true, placeholder: live ? "e.g. Sunday styling session" : "e.g. velvet swatch reveal", span2: true },
         { name: "date", label: "Goes out", type: "date" },
         { name: "time", label: "At", type: "time" },
         { name: "platform", label: "Where", placeholder: "Instagram, TikTok…", datalist: PLATFORMS },
-        { name: "format", label: "Format", placeholder: "Reel, carousel…", datalist: FORMATS },
+        { name: "format", label: "Format", placeholder: "Reel, carousel, Live…", datalist: FORMATS },
+        { name: "duration", label: "Planned length (minutes)", type: "number", step: "5", placeholder: "e.g. 45" },
+        ...(isNew ? [{ name: "repeat", label: "Repeat weekly", type: "select", options: [["1", "Just this once"], ["2", "For 2 weeks"], ["4", "For 4 weeks"], ["8", "For 8 weeks"], ["12", "For 12 weeks"]].map(([value, label]) => ({ value, label })) }] : []),
         { name: "status", label: "Stage", type: "select", options: CONTENT_STATUS.map(([value, label]) => ({ value, label })) },
         { name: "projectId", label: "Project", type: "select", options: projectOptions(c.projectId) },
-        { name: "notes", label: "Caption & notes", type: "textarea", placeholder: "hook, caption, shot list, hashtags…", span2: true },
+        { name: "notes", label: live ? "Plan & talking points" : "Caption & notes", type: "textarea", placeholder: live ? "theme, segments, products to show, who to shout out…" : "hook, caption, shot list, hashtags…", span2: true },
         { name: "link", label: "Link once it's posted", type: "url", placeholder: "https://…", span2: true },
+        { name: "liveHead", type: "note" },
+        ...LIVE_RESULTS.map(([name, label]) => ({ name, label, type: "number", step: "1", placeholder: "—" })),
       ],
-      onSubmit: (v) => {
-        Store.upsert("content", { ...c, ...v });
-        toast(isNew ? "Added to the content calendar." : "Saved.");
+      onChange: (v, root) => {
+        const on = isLive(v);
+        ["duration", "repeat", ...LIVE_RESULTS.map(([k]) => k)].forEach((k) => { const f = $(`[name="${k}"]`, root); if (f) f.closest("label").style.display = on ? "" : "none"; });
+        const head = $("#liveHead", root);
+        head.style.display = on ? "" : "none";
+        head.innerHTML = `<b>After the live</b> · fill these in from TikTok's LIVE summary, so the Metrics tab can chart how your lives grow.`;
       },
-      onDelete: isNew ? null : () => { Store.remove("content", c.id); toast("Post removed."); },
+      onSubmit: (v) => {
+        const { liveHead, repeat, ...rest } = v;
+        const times = isNew && isLive(rest) && rest.date ? Math.max(1, +repeat || 1) : 1;
+        for (let i = 0; i < times; i++) {
+          Store.upsert("content", { ...c, ...rest, date: i && rest.date ? stepDays(rest.date, 7 * i) : rest.date });
+        }
+        toast(times > 1 ? `${times} weekly lives added to the calendar.` : isNew ? "Added to the content calendar." : "Saved.");
+      },
+      onDelete: isNew ? null : () => { Store.remove("content", c.id); toast(live ? "Live removed." : "Post removed."); },
     });
   }
 
@@ -2307,8 +2334,8 @@
 
   const contentLi = (c, { showProject = true } = {}) => `<li data-content="${c.id}" style="cursor:pointer">
       ${c.date ? dateChip(c.date) : `<div class="date-chip undated"><span class="m">—</span><span class="d">?</span></div>`}
-      <div class="grow"><span class="title">${esc(c.title)}</span>
-        <span class="meta">${[c.platform, c.format].filter(Boolean).map(esc).join(" · ") || "<i>platform not set</i>"}${c.time ? ` · ${esc(fmtTime(c.time))}` : ""}${showProject && c.projectId ? ` · ${projectChip(c.projectId)}` : ""}</span></div>
+      <div class="grow"><span class="title">${isLive(c) ? `<span class="live-mark">◉ Live</span> ` : ""}${esc(c.title)}</span>
+        <span class="meta">${[c.platform, isLive(c) ? "" : c.format].filter(Boolean).map(esc).join(" · ") || "<i>platform not set</i>"}${c.time ? ` · ${esc(fmtTime(c.time))}` : ""}${isLive(c) && c.duration ? ` · ${esc(c.duration)} min` : ""}${isLive(c) && hasResults(c) ? ` · peak ${esc(c.livePeak || "—")} · +${esc(c.liveFollowers || 0)} followers` : ""}${showProject && c.projectId ? ` · ${projectChip(c.projectId)}` : ""}</span></div>
       <span class="tag cstatus ${esc(c.status || "idea")}">${esc(labelOf(CONTENT_STATUS, c.status || "idea"))}</span>
     </li>`;
 
@@ -2451,6 +2478,7 @@
         <div class="segmented" data-ui="contentView">${[["calendar", "Calendar"], ["pipeline", "Pipeline"]].map(([v, l]) => `<button class="${ui.contentView === v ? "on" : ""}" data-value="${v}">${l}</button>`).join("")}</div>
         ${ui.contentView === "calendar" ? `<div class="month-nav"><button class="icon-btn" data-cmonth="-1" aria-label="Previous month">‹</button><span>${monthLabel(m)}</span><button class="icon-btn" data-cmonth="1" aria-label="Next month">›</button></div>` : ""}
         <span class="spacer"></span>
+        <button class="btn sm" data-act="plan-live">◉ Plan a Live</button>
         <button class="btn ghost sm" data-act="import-posts">Import posts</button>
         <select id="contentProject" aria-label="Filter by working" style="width:auto">${projOpts.map(([v, l]) => `<option value="${esc(v)}" ${ui.contentProject === v ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>
       </div>`;
@@ -2480,7 +2508,7 @@
       const s = ymd(d), evs = byDate[s] || [], mss = msBy[s] || [];
       const chips = [
         ...mss.map(({ p, m: x }) => `<span class="ev msev ${x.done ? "done" : ""}" title="Milestone: ${esc(x.title)} (${esc(p.name)})">◆ ${esc(x.title)}</span>`),
-        ...evs.map((c) => `<span class="ev cs-${esc(c.status || "idea")}" data-content="${c.id}" title="${esc(c.title)} · ${esc([c.platform, c.format].filter(Boolean).join(" · "))} · ${esc(labelOf(CONTENT_STATUS, c.status))}">${esc(c.title)}</span>`),
+        ...evs.map((c) => `<span class="ev cs-${esc(c.status || "idea")} ${isLive(c) ? "live" : ""}" data-content="${c.id}" title="${esc(c.title)} · ${esc([c.platform, c.format].filter(Boolean).join(" · "))}${c.time ? ` · ${esc(fmtTime(c.time))}` : ""} · ${esc(labelOf(CONTENT_STATUS, c.status))}">${isLive(c) ? `◉ ${c.time ? esc(fmtTime(c.time)) + " " : ""}` : ""}${esc(c.title)}</span>`),
       ];
       const cls = ["day", d.getMonth() !== m.getMonth() && "other", s === today && "today", s === ui.contentDay && "selected"].filter(Boolean).join(" ");
       cells += `<div class="${cls}" data-cday="${s}" role="button" tabindex="0" aria-label="${fmtDate(s, { weekday: "long", month: "long", day: "numeric" })}, ${evs.length} posts">
@@ -2503,10 +2531,236 @@
       </div>`;
   }
 
+  /* ── Metrics: social numbers logged over time, and how the lives went ── */
+  const METRIC_FIELDS = [
+    ["followers", "Followers"], ["likes", "Likes"], ["views", "Views"], ["comments", "Comments"],
+    ["shares", "Shares"], ["saves", "Saves"], ["profileViews", "Profile views"], ["reach", "Reach"],
+  ];
+  const SOCIALS = ["Instagram", "TikTok", "YouTube", "Pinterest", "Threads"];
+  const PERIODS = [["7", "the last 7 days"], ["28", "the last 28 days"], ["total", "all time"], ["day", "that day"]];
+  const RANGES = [["30", "30 days"], ["90", "90 days"], ["365", "1 year"], ["all", "All"]];
+  const fmtCount = (n) => (n === undefined || n === null || n === "" ? "—" : Number(n).toLocaleString());
+  const metricLabel = (k) => (METRIC_FIELDS.find(([v]) => v === k) || [, k])[1];
+  const trackedPlatforms = () => {
+    const counts = {};
+    D().metrics.forEach((m) => (counts[m.platform] = (counts[m.platform] || 0) + 1));
+    return Object.keys(counts).sort((a, b) => counts[b] - counts[a] || a.localeCompare(b));
+  };
+  const snapshotsFor = (platform) => D().metrics.filter((m) => m.platform === platform).sort((a, b) => a.date.localeCompare(b.date));
+  const lastValue = (platform, key) => {
+    const list = snapshotsFor(platform).filter((m) => m[key] !== undefined && m[key] !== null && m[key] !== "");
+    return list.length ? list[list.length - 1][key] : undefined;
+  };
+
+  function editMetric(m = {}) {
+    const isNew = !m.id;
+    const platform = m.platform || ui.metricPlatform || trackedPlatforms()[0] || "Instagram";
+    const options = [...new Set([...SOCIALS, ...trackedPlatforms(), platform])];
+    openForm({
+      title: isNew ? "Log the Numbers" : "Numbers",
+      values: { date: todayStr(), period: "7", ...m, platform },
+      fields: [
+        { name: "platform", label: "Platform", type: "select", options: options.map((value) => ({ value, label: value })) },
+        { name: "date", label: "As of", type: "date", required: true },
+        ...METRIC_FIELDS.map(([name, label]) => ({ name, label, type: "number", step: "1", placeholder: "—" })),
+        { name: "period", label: "Likes, views and the rest cover", type: "select", options: PERIODS.map(([value, label]) => ({ value, label })), span2: true },
+        { name: "notes", label: "Notes", placeholder: "what happened this week, e.g. a reel took off", span2: true },
+      ],
+      onChange: (v, root) => {
+        // show last time's numbers as hints, so a weekly log is quick to fill in
+        METRIC_FIELDS.forEach(([k]) => {
+          const input = $(`[name="${k}"]`, root), last = lastValue(v.platform, k);
+          if (input) input.placeholder = last === undefined || (!isNew && m[k] !== undefined) ? "—" : `last: ${fmtCount(last)}`;
+        });
+      },
+      onSubmit: (v) => {
+        const rec = { ...m, platform: v.platform, date: v.date, period: v.period, notes: v.notes };
+        let any = false;
+        METRIC_FIELDS.forEach(([k]) => {
+          const n = v[k];
+          if (n === "" || n === null || isNaN(n)) delete rec[k];
+          else { rec[k] = Math.round(n); any = true; }
+        });
+        if (!any) return "Add at least one number.";
+        Store.upsert("metrics", rec);
+        ui.metricPlatform = v.platform;
+        toast(isNew ? `${v.platform} numbers logged.` : "Saved.");
+      },
+      onDelete: isNew ? null : () => { Store.remove("metrics", m.id); toast("Entry removed."); },
+    });
+  }
+
+  /* paste an analytics export: one snapshot per row, merged into any already logged for that day */
+  let metricDraft = { text: "", platform: "" };
+  function openMetricImport() {
+    modal.classList.add("wide");
+    $("#modalTitle").textContent = "Import Numbers";
+    $("#modalBody").oninput = null;
+    metricDraft.platform = metricDraft.platform || ui.metricPlatform || trackedPlatforms()[0] || "TikTok";
+    const step1 = () => {
+      $("#modalBody").innerHTML = `
+        <p class="import-help">Paste rows from an analytics export (TikTok Studio and Meta Business Suite can both download one), or type your own.
+          The first row needs <code>Date</code> and any of: <code>Followers</code>, <code>Likes</code>, <code>Video views</code>, <code>Comments</code>, <code>Shares</code>,
+          <code>Saves</code>, <code>Profile views</code>, <code>Reach</code>. Numbers like <code>1,204</code> or <code>1.2K</code> are fine.</p>
+        <textarea class="import-text" spellcheck="false" placeholder="Date,Followers,Likes,Video views&#10;2026-10-25,412,1830,9400">${esc(metricDraft.text)}</textarea>
+        <div class="form-grid" style="margin-top:12px">
+          <label class="field">Platform, unless a column says<select id="metricPlatform">${[...new Set([...SOCIALS, ...trackedPlatforms()])].map((p) => `<option ${p === metricDraft.platform ? "selected" : ""}>${esc(p)}</option>`).join("")}</select></label>
+        </div>
+        <p class="form-error" id="formError"></p>`;
+      $("#modalFoot").innerHTML = `<span class="spacer"></span><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary">Preview</button>`;
+      const ta = $(".import-text", modal);
+      ta.addEventListener("input", () => (metricDraft.text = ta.value));
+      $("#metricPlatform", modal).addEventListener("change", (e) => (metricDraft.platform = e.target.value));
+      modalSubmit = () => {
+        const res = Importer.parseMetrics(metricDraft.text, todayStr());
+        if (res.error || !res.rows.length) { $("#formError").textContent = res.error || "Paste a header row and at least one row of numbers."; return false; }
+        step2(res);
+        return false;
+      };
+    };
+    const step2 = ({ rows, unknown }) => {
+      rows.forEach((r) => { r.platform = r.platform || metricDraft.platform; r.include = r.ok; });
+      const keys = METRIC_FIELDS.map(([k]) => k).filter((k) => rows.some((r) => r.values[k] !== undefined));
+      const render = () => { const n = rows.filter((r) => r.include).length; $("[data-import-go]", modal).textContent = `Import ${n}`; $("[data-import-go]", modal).disabled = !n; };
+      $("#modalBody").innerHTML = `
+        <div class="import-summary"><span><b>${rows.filter((r) => r.ok).length}</b> rows read</span>${unknown.length ? `<span>ignored columns: ${unknown.map(esc).join(", ")}</span>` : ""}<span>Days already logged are updated, not doubled.</span></div>
+        <div class="import-preview"><table>
+          <thead><tr><th></th><th>Date</th><th>Platform</th>${keys.map((k) => `<th class="num">${esc(metricLabel(k))}</th>`).join("")}</tr></thead>
+          <tbody>${rows.sort((a, b) => (a.date || "9").localeCompare(b.date || "9")).map((r, i) => `<tr class="${r.include ? "" : "skip"}">
+            <td><input type="checkbox" data-row="${i}" ${r.include ? "checked" : ""} ${r.ok ? "" : "disabled"} style="width:auto" aria-label="Include ${esc(r.date)}"></td>
+            <td style="white-space:nowrap">${r.date ? esc(fmtDate(r.date, { month: "short", day: "numeric", year: "numeric" })) : `<span class="tag err">${esc(r.error)}</span>`}</td>
+            <td>${esc(r.platform)}</td>
+            ${keys.map((k) => `<td class="num">${fmtCount(r.values[k])}</td>`).join("")}
+          </tr>`).join("")}</tbody></table></div>`;
+      $("#modalFoot").innerHTML = `<button type="button" class="btn ghost" data-import-back>← Back</button><span class="spacer"></span><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary" data-import-go>Import</button>`;
+      $(".import-preview tbody", modal).addEventListener("change", (e) => {
+        const i = e.target.dataset.row;
+        if (i === undefined) return;
+        rows[i].include = e.target.checked;
+        e.target.closest("tr").classList.toggle("skip", !e.target.checked);
+        render();
+      });
+      $("[data-import-back]", modal).addEventListener("click", step1);
+      render();
+      modalSubmit = () => {
+        const chosen = rows.filter((r) => r.include);
+        if (!chosen.length) return false;
+        ui.metricPlatform = chosen[0].platform;
+        chosen.forEach((r) => {
+          const same = D().metrics.find((m) => m.platform === r.platform && m.date === r.date);
+          Store.upsert("metrics", same ? { id: same.id, ...r.values } : { platform: r.platform, date: r.date, period: "day", notes: "", ...r.values });
+        });
+        metricDraft.text = "";
+        toast(`${chosen.length} day${chosen.length === 1 ? "" : "s"} of numbers imported.`);
+        return true;
+      };
+    };
+    step1();
+    modal.showModal();
+    $(".import-text", modal).focus();
+  }
+
+  /* what the Metrics tab shows for the chosen platform and range */
+  function metricSlice() {
+    const platforms = trackedPlatforms();
+    if (!platforms.includes(ui.metricPlatform)) ui.metricPlatform = platforms[0] || "";
+    const from = ui.metricRange === "all" ? "" : stepDays(todayStr(), -Number(ui.metricRange));
+    const snaps = snapshotsFor(ui.metricPlatform).filter((m) => !from || m.date >= from);
+    const activityKeys = METRIC_FIELDS.map(([k]) => k).filter((k) => k !== "followers" && snaps.some((m) => m[k] !== undefined));
+    if (!activityKeys.includes(ui.metricKey)) ui.metricKey = activityKeys[0] || "";
+    const lives = D().content.filter((c) => isLive(c) && hasResults(c) && c.date && (!from || c.date >= from)).sort((a, b) => a.date.localeCompare(b.date));
+    return { platforms, snaps, activityKeys, lives };
+  }
+
+  function metricsView() {
+    const { platforms, snaps, activityKeys, lives } = metricSlice();
+    const today = todayStr();
+    const stale = platforms.map((p) => [p, snapshotsFor(p).pop()]).filter(([, m]) => m && daysBetween(m.date, today) >= 7);
+    const actions = `<div class="toolbar metrics-actions"><button class="btn primary sm" data-act="log-metrics">+ Log numbers</button><button class="btn ghost sm" data-act="import-metrics">Import</button></div>`;
+    if (!platforms.length && !lives.length) {
+      return actions + `<div class="card">${empty("☉", "No numbers yet. Once a week, log your followers and the week's likes, views and comments for each platform; it takes a minute. Or import an analytics export. Lives you plan on the content calendar can carry their results too.")}</div>`;
+    }
+    const delta = (now, then) => {
+      if (now === undefined || then === undefined) return "";
+      const d = now - then;
+      return d === 0 ? `<span class="sub">no change</span>` : `<span class="sub ${d > 0 ? "pos" : "neg"}">${d > 0 ? "▲ +" : "▼ −"}${Math.abs(d).toLocaleString()}</span>`;
+    };
+    const withF = snaps.filter((m) => m.followers !== undefined);
+    const latest = snaps[snaps.length - 1], prev = snaps[snaps.length - 2];
+    const tiles = [
+      withF.length ? `<div class="card stat"><div class="label">Followers</div><div class="value">${fmtCount(withF[withF.length - 1].followers)}</div>${withF.length > 1 ? `${delta(withF[withF.length - 1].followers, withF[0].followers)} <span class="sub">since ${esc(fmtDate(withF[0].date, { month: "short", day: "numeric" }))}</span>` : `<span class="sub">first reading</span>`}</div>` : "",
+      ...activityKeys.filter((k) => latest && latest[k] !== undefined).slice(0, 3).map((k) => `<div class="card stat"><div class="label">${esc(metricLabel(k))}</div><div class="value">${fmtCount(latest[k])}</div>${prev && prev[k] !== undefined ? `${delta(latest[k], prev[k])} <span class="sub">vs the log before</span>` : `<span class="sub">${esc(labelOf(PERIODS, latest.period || "7"))}</span>`}</div>`),
+    ].filter(Boolean);
+    const periods = [...new Set(snaps.map((m) => m.period || "7"))];
+    const liveTotals = lives.reduce((t, c) => ({ peak: t.peak + (+c.livePeak || 0), followers: t.followers + (+c.liveFollowers || 0), gifts: t.gifts + (+c.liveGifts || 0), minutes: t.minutes + (+c.liveMinutes || 0) }), { peak: 0, followers: 0, gifts: 0, minutes: 0 });
+    const histKeys = METRIC_FIELDS.map(([k]) => k).filter((k) => snaps.some((m) => m[k] !== undefined));
+    return actions + `
+      ${stale.map(([p, m]) => `<div class="nudge">☉ It's been ${daysBetween(m.date, today)} days since you logged ${esc(p)}. <button class="btn sm" data-act="log-metrics" data-platform="${esc(p)}">Log ${esc(p)}</button></div>`).join("")}
+      <div class="toolbar">
+        ${platforms.length ? `<div class="segmented" data-ui="metricPlatform">${platforms.map((p) => `<button class="${ui.metricPlatform === p ? "on" : ""}" data-value="${esc(p)}">${esc(p)}</button>`).join("")}</div>` : ""}
+        <div class="segmented" data-ui="metricRange">${RANGES.map(([v, l]) => `<button class="${ui.metricRange === v ? "on" : ""}" data-value="${v}">${l}</button>`).join("")}</div>
+      </div>
+      ${platforms.length ? `
+        ${tiles.length ? `<div class="grid cols-4 stats" style="margin-bottom:18px">${tiles.join("")}</div>` : ""}
+        <div class="grid cols-2 chart-grid">
+          <div class="card">
+            <div class="card-head"><h2>Followers</h2><small>${esc(ui.metricPlatform)}</small></div>
+            ${withF.length ? `<div class="chart-box" data-chart="followers"></div>` : `<p class="arcana-empty">No follower counts logged in this range.</p>`}
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>${esc(metricLabel(ui.metricKey) || "Engagement")}</h2><small>${periods.length === 1 ? `each covers ${esc(labelOf(PERIODS, periods[0]))}` : "as logged; periods vary"}</small></div>
+            ${activityKeys.length > 1 ? `<div class="segmented metric-pick" data-ui="metricKey">${activityKeys.map((k) => `<button class="${ui.metricKey === k ? "on" : ""}" data-value="${k}">${esc(metricLabel(k))}</button>`).join("")}</div>` : ""}
+            ${activityKeys.length ? `<div class="chart-box" data-chart="activity"></div>` : `<p class="arcana-empty">Log likes, views or comments to see them here.</p>`}
+          </div>
+        </div>` : ""}
+      ${lives.length ? `
+        <div class="card" style="margin-top:18px">
+          <div class="card-head"><h2>◉ Lives</h2><small>${lives.length} with results in this range</small></div>
+          <div class="grid cols-4 stats" style="margin-bottom:14px">
+            <div class="card stat"><div class="label">Average peak</div><div class="value">${fmtCount(Math.round(liveTotals.peak / lives.length))}</div><span class="sub">viewers at once</span></div>
+            <div class="card stat"><div class="label">New followers</div><div class="value">${fmtCount(liveTotals.followers)}</div><span class="sub">from lives</span></div>
+            <div class="card stat"><div class="label">Gifts</div><div class="value">${fmtCount(liveTotals.gifts)}</div><span class="sub">in total</span></div>
+            <div class="card stat"><div class="label">Time live</div><div class="value">${fmtCount(Math.round(liveTotals.minutes / 60 * 10) / 10)}</div><span class="sub">hours</span></div>
+          </div>
+          <h3 class="sub-h" style="margin-top:0">Peak viewers, live by live</h3>
+          <div class="chart-box" data-chart="lives"></div>
+          <div class="table-wrap" style="margin-top:12px"><table>
+            <thead><tr><th>Date</th><th>Live</th>${LIVE_RESULTS.map(([, l]) => `<th class="num hide-sm">${esc(l.replace(/ \(.*\)/, ""))}</th>`).join("")}</tr></thead>
+            <tbody>${lives.slice().reverse().map((c) => `<tr data-content="${c.id}" style="cursor:pointer"><td style="white-space:nowrap">${esc(fmtDate(c.date, { month: "short", day: "numeric" }))}</td><td>${esc(c.title)}<small class="show-sm"><br>peak ${fmtCount(c.livePeak)} · +${fmtCount(c.liveFollowers || 0)} followers</small></td>${LIVE_RESULTS.map(([k]) => `<td class="num hide-sm">${fmtCount(c[k])}</td>`).join("")}</tr>`).join("")}</tbody>
+          </table></div>
+        </div>` : ""}
+      ${snaps.length ? `
+        <div class="card" style="margin-top:18px">
+          <div class="card-head"><h2>Log</h2><small>${esc(ui.metricPlatform)} · ${snaps.length} entr${snaps.length === 1 ? "y" : "ies"}</small></div>
+          <div class="table-wrap"><table class="metric-table">
+            <thead><tr><th>Date</th>${histKeys.map((k, i) => `<th class="num ${i > 1 ? "hide-sm" : ""}">${esc(metricLabel(k))}</th>`).join("")}<th class="hide-sm">Notes</th></tr></thead>
+            <tbody>${snaps.slice().reverse().map((m) => `<tr data-metric="${m.id}" style="cursor:pointer"><td style="white-space:nowrap">${esc(fmtDate(m.date, { month: "short", day: "numeric", year: "numeric" }))}</td>${histKeys.map((k, i) => `<td class="num ${i > 1 ? "hide-sm" : ""}">${fmtCount(m[k])}</td>`).join("")}<td class="note hide-sm">${esc(m.notes || "")}</td></tr>`).join("")}</tbody>
+          </table></div>
+        </div>` : ""}`;
+  }
+
+  function drawMetricCharts(root) {
+    if (!window.Charts || !$("[data-chart]", root)) return;
+    const { snaps, lives } = metricSlice();
+    const day = (d) => fmtDate(d, { weekday: "short", month: "short", day: "numeric" });
+    const f = $('[data-chart="followers"]', root);
+    if (f) Charts.line(f, snaps.filter((m) => m.followers !== undefined).map((m) => ({ date: m.date, value: m.followers, label: day(m.date) })), { label: `${ui.metricPlatform} followers` });
+    const a = $('[data-chart="activity"]', root);
+    if (a) Charts.columns(a, snaps.filter((m) => m[ui.metricKey] !== undefined).map((m) => ({ value: m[ui.metricKey], label: `${day(m.date)} · ${labelOf(PERIODS, m.period || "7")}`, short: fmtDate(m.date, { month: "short", day: "numeric" }) })), { label: metricLabel(ui.metricKey) });
+    const l = $('[data-chart="lives"]', root);
+    if (l) Charts.columns(l, lives.map((c) => ({ value: +c.livePeak || 0, label: `${day(c.date)} · ${c.title}`, short: fmtDate(c.date, { month: "short", day: "numeric" }) })), { label: "Peak viewers", valueText: (b) => `${b.value.toLocaleString()} at peak` });
+  }
+  let chartResize;
+  window.addEventListener("resize", () => {
+    clearTimeout(chartResize);
+    chartResize = setTimeout(() => { if (currentView() === "workings" && ui.workTab === "metrics" && !routeParam()) drawMetricCharts($("#view")); }, 150);
+  });
+
   views.workings = {
     title: () => { const p = routeParam() && projectById(routeParam()); return p ? p.name : "Workings"; },
     actions: () => {
       if (routeParam() && projectById(routeParam())) return `<button class="btn" data-act="add-content-project" data-id="${esc(routeParam())}">+ Post</button>`;
+      if (ui.workTab === "metrics") return "";
       return ui.workTab === "content" ? `<button class="btn primary" data-act="add-content-day">+ Post</button>` : `<button class="btn primary" data-act="add-project">+ Working</button>`;
     },
     render() {
@@ -2515,9 +2769,10 @@
         const p = projectById(id);
         return p ? projectPage(p) : `<div class="card">${empty("⚗", "That working isn't here any more. <a href=\"#workings\">See all workings</a>.")}</div>`;
       }
-      const tabs = `<div class="toolbar"><div class="segmented" data-ui="workTab">${[["projects", "Projects"], ["timeline", "Timeline"], ["content", "Content calendar"]].map(([v, l]) => `<button class="${ui.workTab === v ? "on" : ""}" data-value="${v}">${l}</button>`).join("")}</div></div>`;
+      const tabs = `<div class="toolbar"><div class="segmented" data-ui="workTab">${[["projects", "Projects"], ["timeline", "Timeline"], ["content", "Content calendar"], ["metrics", "Metrics"]].map(([v, l]) => `<button class="${ui.workTab === v ? "on" : ""}" data-value="${v}">${l}</button>`).join("")}</div></div>`;
       if (ui.workTab === "timeline") return tabs + timelineView();
       if (ui.workTab === "content") return tabs + contentView();
+      if (ui.workTab === "metrics") return tabs + metricsView();
       const groups = { active: (p) => ACTIVE_STATUS.has(p.status), resting: (p) => p.status === "resting", complete: (p) => p.status === "complete", all: () => true };
       const list = D().projects.filter(groups[ui.workStatus] || groups.active)
         .sort((a, b) => PROJECT_STATUS.findIndex(([k]) => k === b.status) - PROJECT_STATUS.findIndex(([k]) => k === a.status) || (a.target || "9999").localeCompare(b.target || "9999"));
@@ -2528,6 +2783,10 @@
     },
     bind(root) {
       bindSegments(root);
+      if (ui.workTab === "metrics" && !routeParam()) {
+        drawMetricCharts(root);
+        $$("[data-metric]", root).forEach((tr) => tr.addEventListener("click", () => editMetric(D().metrics.find((m) => m.id === tr.dataset.metric))));
+      }
       $$("[data-wstatus]", root).forEach((b) => b.addEventListener("click", () => { ui.workStatus = b.dataset.wstatus; render(); }));
       $$("[data-open-project]", root).forEach((c) => {
         const go = () => (location.hash = `workings/${c.dataset.openProject}`);
@@ -2769,6 +3028,9 @@
     "add-content-day": () => editContent({ date: ui.workTab === "content" && currentView() === "workings" ? ui.contentDay : "", projectId: ui.contentProject !== "all" && ui.contentProject !== "none" ? ui.contentProject : "" }),
     "add-content-project": (b) => editContent({ projectId: b.dataset.id }),
     "import-posts": () => openPostImport(),
+    "log-metrics": (b) => editMetric({ platform: (b && b.dataset.platform) || ui.metricPlatform || "" }),
+    "import-metrics": () => openMetricImport(),
+    "plan-live": () => editContent({ format: "Live", platform: "TikTok", status: "scheduled", time: "19:00", duration: 45, date: ui.workTab === "content" ? ui.contentDay : todayStr(), projectId: ui.contentProject !== "all" && ui.contentProject !== "none" ? ui.contentProject : "" }),
     "add-partner": () => editPartner({ kind: ["partnership", "affiliate", "source", "collaborator"].includes(ui.codexTab) ? ui.codexTab : "partnership" }),
     "edit-partner": (b) => editPartner(partnerById(b.dataset.id)),
     "partner-income": (b) => { const p = partnerById(b.dataset.id); editTransaction({ type: "income", scope: "business", partnerId: p.id, description: p.kind === "affiliate" ? `Affiliate payout · ${p.name}` : `${p.name}`, projectId: p.projectId || "" }); },

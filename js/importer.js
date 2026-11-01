@@ -234,7 +234,58 @@
     });
   }
 
-  const api = { parse, parsePosts, splitRows, parseDate, parseMoney, normFrequency };
+  /* social numbers: one row per date, columns matched by name (Date, Followers, Likes, Video views…),
+     as in the analytics exports from TikTok and Meta. Thousands separators and 1.2K / 3M are read. */
+  const METRIC_ALIASES = {
+    date: ["date", "day"],
+    platform: ["platform", "network", "account"],
+    followers: ["followers", "follower count", "total followers", "followers count"],
+    likes: ["likes", "total likes", "likes count"],
+    views: ["views", "video views", "plays", "impressions", "post views"],
+    comments: ["comments"],
+    shares: ["shares"],
+    saves: ["saves", "favorites", "favourites", "bookmarks"],
+    profileViews: ["profile views", "profile visits", "profile activity"],
+    reach: ["reach", "accounts reached", "unique viewers"],
+  };
+  const parseCount = (s) => {
+    const m = /^([\d.,]+)\s*([kmb])?$/i.exec(String(s || "").trim().replace(/\s/g, ""));
+    if (!m) return null;
+    const n = parseFloat(m[1].replace(/,/g, ""));
+    return isNaN(n) ? null : Math.round(n * ({ k: 1e3, m: 1e6, b: 1e9 }[(m[2] || "").toLowerCase()] || 1));
+  };
+
+  function parseMetrics(text, today = new Date().toISOString().slice(0, 10)) {
+    const rows = splitRows(text || "");
+    if (rows.length < 2) return { rows: [], unknown: [] };
+    const head = rows[0].map((c) => c.toLowerCase().replace(/[“”"]/g, "").trim());
+    const map = {}, unknown = [];
+    head.forEach((c, i) => {
+      const hit = Object.entries(METRIC_ALIASES).find(([k, names]) => names.includes(c) && map[k] === undefined);
+      if (hit) map[hit[0]] = i;
+      else if (c) unknown.push(rows[0][i]);
+    });
+    if (map.date === undefined) return { rows: [], unknown, error: "There's no Date column in the first row." };
+    const out = rows.slice(1).map((cells) => {
+      const raw = (cells[map.date] || "").trim();
+      const date = parseDate(raw) || monthDayNear(raw, today) || (() => {
+        const d = new Date(raw);
+        return isNaN(d) ? "" : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      })();
+      const r = { date, platform: map.platform !== undefined ? (cells[map.platform] || "").trim() : "", values: {}, raw: cells };
+      for (const k of Object.keys(METRIC_ALIASES)) {
+        if (k === "date" || k === "platform" || map[k] === undefined) continue;
+        const v = parseCount(cells[map[k]]);
+        if (v !== null) r.values[k] = v;
+      }
+      r.error = !date ? `Unreadable date “${raw}”` : !Object.keys(r.values).length ? "No numbers found" : "";
+      r.ok = !r.error;
+      return r;
+    });
+    return { rows: out, unknown };
+  }
+
+  const api = { parse, parsePosts, parseMetrics, parseCount, splitRows, parseDate, parseMoney, normFrequency };
   if (typeof module !== "undefined") module.exports = api;
   else root.Importer = api;
 })(typeof window !== "undefined" ? window : globalThis);

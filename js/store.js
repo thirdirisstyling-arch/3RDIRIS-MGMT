@@ -15,7 +15,7 @@
 
   const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   const now = () => new Date().toISOString();
-  const COLLECTIONS = ["categories", "transactions", "appointments", "clients", "tasks", "ideas", "projects", "content", "partners"];
+  const COLLECTIONS = ["categories", "transactions", "appointments", "clients", "tasks", "ideas", "projects", "content", "partners", "metrics"];
   // a record's last change; older data without timestamps counts as oldest
   const stamp = (r) => r.updatedAt || r.createdAt || "";
 
@@ -33,6 +33,7 @@
       projects: [], // Workings: ideas being carried out, with milestones
       content: [], // the content calendar
       partners: [], // brand partnerships, affiliates, sources and collaborators
+      metrics: [], // follower and engagement numbers, logged over time
       deleted: [], // tombstones { c: collection, id, at } so deletions sync too
     };
   }
@@ -63,6 +64,7 @@
       projects: Array.isArray(d.projects) ? d.projects : [],
       content: Array.isArray(d.content) ? d.content : [],
       partners: Array.isArray(d.partners) ? d.partners : [],
+      metrics: Array.isArray(d.metrics) ? d.metrics : [],
       deleted: Array.isArray(d.deleted) ? d.deleted : [],
     };
   }
@@ -271,7 +273,21 @@
       post("Why every piece is adjustable", 11, "Instagram", "Reel", "idea"),
       post("Sample day, behind the scenes", 30, "Instagram", "Story", "idea"),
       post("Pre-orders open", 60, "Newsletter", "Email", "idea"),
+      // weekly TikTok lives: three done (with their results) and the next one planned
+      ...[[-21, 31, 140, 9, 220, 52], [-14, 44, 210, 14, 410, 58], [-7, 57, 260, 21, 650, 61], [7, 0, 0, 0, 0, 0]].map(([d, peak, viewers, followers, gifts, minutes]) => ({
+        ...post("Sunday styling session", d, "TikTok", "Live", d < 0 ? "posted" : "scheduled"), time: "19:00", duration: 60, projectId: "",
+        ...(d < 0 ? { liveMinutes: minutes, livePeak: peak, liveViewers: viewers, liveFollowers: followers, liveGifts: gifts, liveLikes: viewers * 9, liveComments: Math.round(viewers / 2) } : {}),
+      })),
     );
+
+    // ten weeks of numbers, logged weekly
+    for (let w = 9; w >= 0; w--) {
+      const d = iso(-7 * w - 1), k = 9 - w;
+      data.metrics.push(
+        { id: uid(), date: d, platform: "Instagram", period: "7", followers: 1180 + k * 23 + (k % 3) * 6, likes: 610 + ((k * 137) % 260), comments: 42 + ((k * 31) % 30), saves: 55 + ((k * 17) % 40), reach: 3200 + ((k * 421) % 1600), notes: "", createdAt: stamp, updatedAt: stamp },
+        { id: uid(), date: d, platform: "TikTok", period: "7", followers: 310 + k * k * 4 + k * 11, likes: 900 + ((k * 389) % 1700) + k * 140, views: 7400 + ((k * 2311) % 9000) + k * 900, comments: 60 + ((k * 23) % 50), shares: 18 + ((k * 7) % 22), notes: k === 7 ? "the hair scarf reel took off" : "", createdAt: stamp, updatedAt: stamp },
+      );
+    }
 
     const rel = (r) => ({ contact: "", email: "", phone: "", website: "", handle: "", via: "", link: "", code: "", rate: "", offers: "", terms: "", followUp: "", nextStep: "", projectId: "", tags: [], notes: "", log: [], ...r, id: uid(), createdAt: stamp, updatedAt: stamp });
     data.partners.push(

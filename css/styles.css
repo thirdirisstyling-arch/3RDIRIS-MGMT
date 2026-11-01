@@ -917,3 +917,30 @@ body.dropping .view::after {
   .stage-board { grid-template-columns: minmax(0, 1fr); }
   .kvs { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* ── metrics & lives ──────────────────────── */
+.chart-box { position: relative; width: 100%; min-height: 220px; }
+.chart-box:focus-visible { outline: 1px solid var(--gold-dim); outline-offset: 4px; border-radius: 4px; }
+.chart-box svg { display: block; overflow: visible; font-family: var(--font-body); }
+.chart-tip {
+  position: absolute; z-index: 5; pointer-events: none; display: flex; flex-direction: column; gap: 1px;
+  padding: 6px 10px; border-radius: var(--radius); background: var(--vellum-3); border: 1px solid var(--line);
+  box-shadow: 0 10px 24px -10px rgba(0, 0, 0, .8); white-space: nowrap;
+}
+.chart-tip strong { font-size: 16px; font-weight: 600; color: var(--bone); font-variant-numeric: tabular-nums; }
+.chart-tip span { font-size: 13px; color: var(--ash); font-style: italic; }
+.chart-tip[hidden] { display: none; }
+.grid.chart-grid { align-items: start; grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr)); }
+.metric-pick { margin: -2px 0 10px; flex-wrap: wrap; }
+.metric-pick button { font-size: 13px; padding: 4px 10px; }
+.metrics-actions { margin-top: -4px; }
+.stat .sub.pos, .stat .sub.neg { font-style: normal; }
+.nudge {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 0 0 12px; padding: 10px 14px;
+  border: 1px dashed var(--gold-dim); border-radius: var(--radius); color: var(--parchment); font-style: italic;
+}
+.metric-table td.num, .metric-table th.num { white-space: nowrap; }
+
+.live-mark { font-family: var(--font-sc); font-size: 13px; letter-spacing: .06em; color: var(--rose); font-style: normal; }
+.calendar .ev.live { border-left-color: var(--rose); background: rgba(192, 122, 128, .18); color: var(--bone); }
+@media (max-width: 860px) { .calendar .ev.live { background: var(--rose); } }
