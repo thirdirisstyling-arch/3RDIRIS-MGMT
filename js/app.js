@@ -1775,9 +1775,81 @@
     }
   }, true);
 
+  /* paste a list of tasks into the Agenda: preview, pick what to keep, link to a working */
+  let taskDraft = { text: "", projectId: "", scope: "business" };
+  function openTaskImport() {
+    modal.classList.add("wide");
+    $("#modalTitle").textContent = "Import Tasks";
+    $("#modalBody").oninput = null;
+    const step1 = () => {
+      $("#modalBody").innerHTML = `
+        <p class="import-help">Paste tasks, one per row, from a spreadsheet or as comma-separated text. With a header row such as
+          <code>title,due,suit,steps,notes</code> the columns can come in any order; without one they're read in that order.
+          Suits are <code>swords</code>, <code>pentacles</code>, <code>wands</code> or <code>cups</code> (blank leaves it unturned).
+          Separate steps with <code>|</code>.</p>
+        <textarea class="import-text" spellcheck="false" placeholder="title,due,suit,steps,notes&#10;Apply to Punk Design,2026-11-04,pentacles,Check terms | Apply,60-day cookie">${esc(taskDraft.text)}</textarea>
+        <div class="form-grid" style="margin-top:12px">
+          <label class="field">Link every task to<select id="taskProject">${projectOptions(taskDraft.projectId).map((o) => `<option value="${esc(o.value)}" ${o.value === taskDraft.projectId ? "selected" : ""}>${esc(o.label)}</option>`).join("")}</select></label>
+          <label class="field">Purse, where none is given<select id="taskScope"><option value="business" ${taskDraft.scope === "business" ? "selected" : ""}>Business</option><option value="personal" ${taskDraft.scope === "personal" ? "selected" : ""}>Personal</option></select></label>
+        </div>
+        <p class="form-error" id="formError"></p>`;
+      $("#modalFoot").innerHTML = `<span class="spacer"></span><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary">Preview</button>`;
+      const ta = $(".import-text", modal);
+      ta.addEventListener("input", () => (taskDraft.text = ta.value));
+      $("#taskProject", modal).addEventListener("change", (e) => (taskDraft.projectId = e.target.value));
+      $("#taskScope", modal).addEventListener("change", (e) => (taskDraft.scope = e.target.value));
+      modalSubmit = () => {
+        const rows = Importer.parseTasks(taskDraft.text, todayStr()).sort((a, b) => (a.due || "9999").localeCompare(b.due || "9999"));
+        if (!rows.length) { $("#formError").textContent = "Paste some rows first."; return false; }
+        step2(rows);
+        return false;
+      };
+    };
+    const step2 = (rows) => {
+      const open = new Set(D().tasks.filter((t) => !t.done).map((t) => t.title.trim().toLowerCase()));
+      rows.forEach((r) => { r.duplicate = r.ok && open.has(r.title.toLowerCase()); r.include = r.ok && !r.duplicate; });
+      const render = () => { const n = rows.filter((r) => r.include).length; $("[data-import-go]", modal).textContent = `Import ${n}`; $("[data-import-go]", modal).disabled = !n; };
+      $("#modalBody").innerHTML = `
+        <div class="import-summary"><span><b>${rows.filter((r) => r.ok).length}</b> tasks read</span>${projectById(taskDraft.projectId) ? `<span>linked to ${projectChip(taskDraft.projectId)}</span>` : ""}${rows.some((r) => r.duplicate) ? `<span class="neg">${rows.filter((r) => r.duplicate).length} already on the agenda</span>` : ""}</div>
+        <div class="import-preview"><table>
+          <thead><tr><th></th><th>Task</th><th>Due</th><th>Suit</th><th class="hide-sm">Steps</th></tr></thead>
+          <tbody>${rows.map((r, i) => `<tr class="${r.include ? "" : "skip"}">
+            <td><input type="checkbox" data-row="${i}" ${r.include ? "checked" : ""} ${r.ok ? "" : "disabled"} style="width:auto" aria-label="Include ${esc(r.title)}"></td>
+            <td>${esc(r.title || r.raw.join(" "))}${!r.ok ? ` <span class="tag err">${esc(r.error)}</span>` : r.duplicate ? ` <span class="tag dupe">already on the agenda</span>` : ""}${r.notes ? `<br><small><i>${esc(r.notes.length > 90 ? r.notes.slice(0, 90) + "…" : r.notes)}</i></small>` : ""}</td>
+            <td style="white-space:nowrap">${r.due ? esc(fmtDate(r.due, { weekday: "short", month: "short", day: "numeric" })) : "<small>—</small>"}</td>
+            <td><span class="arcana-tag ${r.suit || "unturned"}">${suitIcon(r.suit)}<span class="hide-sm">${esc(suitOf(r.suit).name)}</span></span></td>
+            <td class="note hide-sm">${r.steps.length ? `${r.steps.length} step${r.steps.length === 1 ? "" : "s"}: ${esc(r.steps.join(" · "))}` : ""}</td>
+          </tr>`).join("")}</tbody></table></div>`;
+      $("#modalFoot").innerHTML = `<button type="button" class="btn ghost" data-import-back>← Back</button><span class="spacer"></span><button type="button" class="btn ghost" data-close>Cancel</button><button type="submit" class="btn primary" data-import-go>Import</button>`;
+      $(".import-preview tbody", modal).addEventListener("change", (e) => {
+        const i = e.target.dataset.row;
+        if (i === undefined) return;
+        rows[i].include = e.target.checked;
+        e.target.closest("tr").classList.toggle("skip", !e.target.checked);
+        render();
+      });
+      $("[data-import-back]", modal).addEventListener("click", step1);
+      render();
+      modalSubmit = () => {
+        const chosen = rows.filter((r) => r.include);
+        if (!chosen.length) return false;
+        chosen.forEach((r) => Store.upsert("tasks", {
+          title: r.title, due: r.due, notes: r.notes, scope: r.scope || taskDraft.scope, clientId: "", projectId: taskDraft.projectId,
+          done: false, doneAt: "", subtasks: r.steps.map((title) => ({ id: Store.uid(), title, done: false })), ...quadrantFields(r.suit),
+        }));
+        taskDraft = { ...taskDraft, text: "" };
+        toast(`${chosen.length} task${chosen.length === 1 ? "" : "s"} added to the agenda.`);
+        return true;
+      };
+    };
+    step1();
+    modal.showModal();
+    $(".import-text", modal).focus();
+  }
+
   views.agenda = {
     title: "Agenda",
-    actions: () => `${D().tasks.some((t) => t.done) ? `<button class="btn ghost" data-act="clear-done">Clear finished</button>` : ""}<button class="btn primary" data-act="add-task">+ Task</button>`,
+    actions: () => `${D().tasks.some((t) => t.done) ? `<button class="btn ghost" data-act="clear-done">Clear finished</button>` : ""}<button class="btn ghost" data-act="import-tasks">Import</button><button class="btn primary" data-act="add-task">+ Task</button>`,
     render() {
       const today = todayStr(), week = stepDays(today, 7);
       const all = D().tasks.filter((t) => ui.agendaScope === "all" || (t.scope || "personal") === ui.agendaScope);
@@ -3028,6 +3100,7 @@
     "add-content-day": () => editContent({ date: ui.workTab === "content" && currentView() === "workings" ? ui.contentDay : "", projectId: ui.contentProject !== "all" && ui.contentProject !== "none" ? ui.contentProject : "" }),
     "add-content-project": (b) => editContent({ projectId: b.dataset.id }),
     "import-posts": () => openPostImport(),
+    "import-tasks": () => openTaskImport(),
     "log-metrics": (b) => editMetric({ platform: (b && b.dataset.platform) || ui.metricPlatform || "" }),
     "import-metrics": () => openMetricImport(),
     "plan-live": () => editContent({ format: "Live", platform: "TikTok", status: "scheduled", time: "19:00", duration: 45, date: ui.workTab === "content" ? ui.contentDay : todayStr(), projectId: ui.contentProject !== "all" && ui.contentProject !== "none" ? ui.contentProject : "" }),

@@ -285,7 +285,51 @@
     return { rows: out, unknown };
   }
 
-  const api = { parse, parsePosts, parseMetrics, parseCount, splitRows, parseDate, parseMoney, normFrequency };
+  /* tasks for the Agenda. With a header row, columns match by name; without one they're read as
+     title, due, suit, steps, notes. Steps are separated by " | ". Suits: swords, pentacles, wands, cups. */
+  const TASK_ALIASES = {
+    title: ["title", "task", "what", "to do", "todo"],
+    due: ["due", "date", "when", "by", "deadline"],
+    suit: ["suit", "quadrant", "arcana", "priority"],
+    steps: ["steps", "subtasks", "checklist"],
+    notes: ["notes", "note", "details", "description"],
+    scope: ["purse", "scope"],
+  };
+  const SUIT_WORDS = [
+    ["q1", /^(swords?|q1|urgent (and|&) important|do( it)? now|high)$/i],
+    ["q2", /^(pentacles?|q2|important|schedule|plan)$/i],
+    ["q3", /^(wands?|q3|urgent|delegate|batch)$/i],
+    ["q4", /^(cups?|q4|neither|later|low|someday)$/i],
+  ];
+  const normSuit = (s) => ((SUIT_WORDS.find(([, re]) => re.test(String(s || "").trim())) || [""])[0]);
+
+  function parseTasks(text, today = new Date().toISOString().slice(0, 10)) {
+    const rows = splitRows(text || "");
+    if (!rows.length) return [];
+    const lower = rows[0].map((c) => c.toLowerCase());
+    const hasHeader = lower.some((c) => TASK_ALIASES.title.includes(c));
+    const map = {};
+    if (hasHeader) lower.forEach((c, i) => { for (const [k, names] of Object.entries(TASK_ALIASES)) if (names.includes(c) && map[k] === undefined) map[k] = i; });
+    else Object.assign(map, { title: 0, due: 1, suit: 2, steps: 3, notes: 4 });
+    return (hasHeader ? rows.slice(1) : rows).map((cells) => {
+      const get = (k) => (map[k] !== undefined ? (cells[map[k]] || "").trim() : "");
+      const rawDue = get("due");
+      const due = rawDue ? parseDate(rawDue) || monthDayNear(rawDue, today) || "" : "";
+      const scope = get("scope").toLowerCase();
+      const out = {
+        title: get("title"), due, suit: normSuit(get("suit")),
+        steps: get("steps").split(/\s*\|\s*/).map((x) => x.trim()).filter(Boolean),
+        notes: get("notes"), scope: scope === "personal" || scope === "business" ? scope : "",
+        raw: cells, error: "",
+      };
+      if (!out.title) out.error = "No title";
+      else if (rawDue && !due) out.error = `Unreadable date “${rawDue}”`;
+      out.ok = !out.error;
+      return out;
+    });
+  }
+
+  const api = { parse, parsePosts, parseMetrics, parseTasks, parseCount, splitRows, parseDate, parseMoney, normFrequency };
   if (typeof module !== "undefined") module.exports = api;
   else root.Importer = api;
 })(typeof window !== "undefined" ? window : globalThis);
