@@ -329,7 +329,29 @@
     });
   }
 
-  const api = { parse, parsePosts, parseMetrics, parseTasks, parseCount, splitRows, parseDate, parseMoney, normFrequency };
+  /* a pasted shopping list, one item per line: "towels, 14, 4", "towels 14 x4", "towels $14", or just "towels".
+     A trailing "(want)" or "?" marks a nice-to-have. */
+  function parseShoppingList(text) {
+    return String(text || "").split(/\r?\n/).map((line) => line.replace(/^\s*(?:[-*•]|\d+[.)]|\[[ x]?\])\s*/i, "").trim()).filter(Boolean).map((line) => {
+      let want = false;
+      line = line.replace(/\s*(\(want\)|\bwant\b|\?)\s*$/i, () => { want = true; return ""; }).trim();
+      let name = line, est = null, qty = 1;
+      if (/[,\t]/.test(line)) {
+        const parts = line.split(/\s*[,\t]\s*/);
+        name = parts[0];
+        if (parts[1] !== undefined) est = parseMoney(parts[1]);
+        if (parts[2] !== undefined && /^\d+$/.test(parts[2])) qty = +parts[2];
+      } else {
+        const m = /^(.*?)\s+\$?(\d+(?:\.\d{1,2})?)(?:\s*(?:x|×)\s*(\d+))?$/i.exec(line);
+        if (m) { name = m[1]; est = +m[2]; if (m[3]) qty = +m[3]; }
+        const q = /^(.*?)\s*(?:x|×)\s*(\d+)$/i.exec(name);
+        if (q) { name = q[1]; qty = +q[2]; }
+      }
+      return { name: name.trim(), est: est === null ? 0 : Math.abs(est), qty: Math.max(1, qty), need: !want };
+    }).filter((r) => r.name);
+  }
+
+  const api = { parse, parsePosts, parseMetrics, parseTasks, parseShoppingList, parseCount, splitRows, parseDate, parseMoney, normFrequency };
   if (typeof module !== "undefined") module.exports = api;
   else root.Importer = api;
 })(typeof window !== "undefined" ? window : globalThis);

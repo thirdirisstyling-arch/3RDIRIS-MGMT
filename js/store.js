@@ -15,7 +15,7 @@
 
   const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   const now = () => new Date().toISOString();
-  const COLLECTIONS = ["categories", "transactions", "appointments", "clients", "tasks", "ideas", "projects", "content", "partners", "metrics"];
+  const COLLECTIONS = ["categories", "transactions", "appointments", "clients", "tasks", "ideas", "projects", "content", "partners", "metrics", "plans"];
   // a record's last change; older data without timestamps counts as oldest
   const stamp = (r) => r.updatedAt || r.createdAt || "";
 
@@ -34,6 +34,7 @@
       content: [], // the content calendar
       partners: [], // brand partnerships, affiliates, sources and collaborators
       metrics: [], // follower and engagement numbers, logged over time
+      plans: [], // planned spending: occasions to pay for and shopping lists
       deleted: [], // tombstones { c: collection, id, at } so deletions sync too
     };
   }
@@ -65,6 +66,7 @@
       content: Array.isArray(d.content) ? d.content : [],
       partners: Array.isArray(d.partners) ? d.partners : [],
       metrics: Array.isArray(d.metrics) ? d.metrics : [],
+      plans: Array.isArray(d.plans) ? d.plans : [],
       deleted: Array.isArray(d.deleted) ? d.deleted : [],
     };
   }
@@ -108,6 +110,7 @@
     // a project's tasks, entries, ideas and posts outlive it, just unlinked
     if (collection === "projects") ["tasks", "transactions", "ideas", "content", "partners"].forEach((c) => unlink(data[c], "projectId"));
     if (collection === "partners") unlink(data.transactions, "partnerId");
+    if (collection === "plans") unlink(data.transactions, "planId");
   }
 
   function remove(collection, id) {
@@ -278,6 +281,15 @@
         ...post("Sunday styling session", d, "TikTok", "Live", d < 0 ? "posted" : "scheduled"), time: "19:00", duration: 60, projectId: "",
         ...(d < 0 ? { liveMinutes: minutes, livePeak: peak, liveViewers: viewers, liveFollowers: followers, liveGifts: gifts, liveLikes: viewers * 9, liveComments: Math.round(viewers / 2) } : {}),
       })),
+    );
+
+    // planned spending: an occasion saved up for, and a household list
+    const item = (name, est, qty = 1, need = true, done = false) => ({ id: uid(), name, est, qty, need, done, actual: done ? est * qty : null, boughtOn: done ? iso(-2) : "", txId: "" });
+    data.plans.push(
+      { id: uid(), kind: "occasion", name: "Rowan's wedding", date: iso(40), budget: 0, saved: 120, scope: "personal", categoryId: cat("Indulgences"), notes: "Black tie, in the city.",
+        items: [item("Travel and hotel", 220), item("Outfit alterations", 60), item("Gift", 75), item("Hair and nails", 50, 1, false)], done: false, createdAt: stamp, updatedAt: stamp },
+      { id: uid(), kind: "shopping", name: "Household restock", date: iso(9), budget: 150, saved: 0, scope: "personal", categoryId: cat("Hearth & Home"), notes: "",
+        items: [item("Bath towels", 14, 4), item("Storage bins", 9, 3), item("Laundry detergent", 16, 1, true, true), item("Candles", 12, 2, false), item("Shower curtain", 18)], done: false, createdAt: stamp, updatedAt: stamp },
     );
 
     // ten weeks of numbers, logged weekly

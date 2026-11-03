@@ -978,6 +978,7 @@
     cabinetShelf: "all",
     codexTab: ["clients", "partnership", "affiliate", "source", "collaborator", "all"].includes(prefs.codexTab) ? prefs.codexTab : "clients",
     codexShowClosed: false,
+    coffersTab: prefs.coffersTab === "plans" ? "plans" : "budget",
     workTab: ["projects", "timeline", "content", "metrics"].includes(prefs.workTab) ? prefs.workTab : "projects",
     metricPlatform: "",
     metricRange: "90",
@@ -1067,6 +1068,14 @@
                   : empty("☑", D().tasks.some((t) => !t.done) ? "Nothing due today." : "No tasks yet. Add one in the Agenda.");
               })()}
             </div>
+            ${(() => {
+              const soon = D().plans.filter((x) => !x.done && x.date && x.date <= stepDays(today, 14) && (x.items || []).some((it) => !it.done)).sort((a, b) => a.date.localeCompare(b.date));
+              if (!soon.length) return "";
+              return `<div class="card">
+                <div class="card-head"><h2>Plans ahead</h2><a href="#coffers">coffers →</a></div>
+                <ul class="list">${soon.slice(0, 4).map((x) => { const st = planStats(x); return `<li data-goto="coffers/${esc(x.id)}" style="cursor:pointer">${dateChip(x.date)}<div class="grow"><span class="title">${x.kind === "shopping" ? "⚱" : "☾"} ${esc(x.name)}</span><span class="meta">${st.stillNeeded ? `${money(st.stillNeeded)} still to find` : "covered"} · ${st.items.length - st.bought} to buy · ${esc(relDay(x.date))}</span></div></li>`; }).join("")}</ul>
+              </div>`;
+            })()}
             ${(() => {
               const due = followUpsDue(3);
               if (!due.length) return "";
@@ -1250,7 +1259,7 @@
         const cl = clientById(t.clientId);
         const meta = t.projected
           ? `projected${t.date < todayStr() ? " · not recorded yet" : ""}`
-          : [cl && esc(cl.name), projectChip(t.projectId), partnerChip(t.partnerId), t.notes && esc(t.notes)].filter(Boolean).join(" · ");
+          : [cl && esc(cl.name), projectChip(t.projectId), partnerChip(t.partnerId), t.planId && planById(t.planId) ? `<a class="proj-chip" href="#coffers/${esc(t.planId)}">⚱ ${esc(planById(t.planId).name)}</a>` : "", t.notes && esc(t.notes)].filter(Boolean).join(" · ");
         // recurring: when the series is next due; one-time: its own due date
         const due = t.projected
           ? `<span class="${dueClass(t.date)}">${esc(t.date < todayStr() ? "past due" : dueLabel(t.date))}</span>`
@@ -1335,15 +1344,211 @@
       const b = e.target.closest("button");
       if (!b) return;
       ui[seg.dataset.ui] = b.dataset.value;
-      if (["ledgerView", "agendaView", "workTab", "contentView"].includes(seg.dataset.ui)) { prefs[seg.dataset.ui] = b.dataset.value; savePrefs(); }
+      if (["ledgerView", "agendaView", "workTab", "contentView", "coffersTab"].includes(seg.dataset.ui)) { prefs[seg.dataset.ui] = b.dataset.value; savePrefs(); }
       render();
     }));
   }
 
+  /* ── Plans: spending you can see coming, so it isn't sporadic ── */
+  const PLAN_KINDS = [["occasion", "Occasion", "an event to pay for"], ["shopping", "Shopping list", "things to buy"]];
+  const planById = (id) => D().plans.find((p) => p.id === id);
+  const itemCost = (it) => (it.done && it.actual !== null && it.actual !== undefined && it.actual !== "" ? Number(it.actual) : (Number(it.est) || 0) * (Number(it.qty) || 1));
+
+  function planStats(p) {
+    const items = p.items || [];
+    const planned = items.reduce((s, it) => s + itemCost(it), 0);
+    const spent = items.filter((it) => it.done).reduce((s, it) => s + itemCost(it), 0);
+    const toBuy = items.filter((it) => !it.done);
+    const needs = toBuy.filter((it) => it.need !== false).reduce((s, it) => s + itemCost(it), 0);
+    const wants = toBuy.filter((it) => it.need === false).reduce((s, it) => s + itemCost(it), 0);
+    const cap = Number(p.budget) || 0;
+    const target = cap || planned;
+    const saved = Number(p.saved) || 0;
+    const stillNeeded = Math.max(0, target - spent - saved);
+    const days = p.date ? daysBetween(todayStr(), p.date) : null;
+    const weeks = days !== null && days > 0 ? Math.max(1, Math.ceil(days / 7)) : null;
+    return { items, planned, spent, needs, wants, cap, target, saved, stillNeeded, days, weeks, perWeek: weeks ? stillNeeded / weeks : null, over: cap && planned > cap ? planned - cap : 0, bought: items.filter((it) => it.done).length };
+  }
+
+  function editPlan(p = {}) {
+    const isNew = !p.id;
+    openForm({
+      title: isNew ? (p.kind === "shopping" ? "New Shopping List" : "Plan an Occasion") : p.name,
+      values: { kind: "occasion", scope: "personal", saved: "", ...p, budget: p.budget || "", saved: p.saved || "" },
+      fields: [
+        { name: "name", label: "Name", required: true, placeholder: p.kind === "shopping" ? "e.g. household restock" : "e.g. Rowan's wedding", span2: true },
+        { name: "kind", label: "Kind", type: "segmented", options: PLAN_KINDS.map(([value, label]) => ({ value, label })), span2: true },
+        { name: "date", label: "When", type: "date" },
+        { name: "budget", label: "Spending cap (optional)", type: "number", placeholder: "the most you'll spend" },
+        { name: "categoryId", label: "Budget category", type: "select", options: categoryOptions() },
+        { name: "scope", label: "Purse", type: "segmented", options: [{ value: "personal", label: "Personal" }, { value: "business", label: "Business" }] },
+        { name: "saved", label: "Set aside so far", type: "number", placeholder: "0" },
+        { name: "notes", label: "Notes", type: "textarea", span2: true },
+      ],
+      onSubmit: (v) => {
+        const id = p.id || Store.uid();
+        Store.upsert("plans", { items: [], done: false, ...p, ...v, id, budget: v.budget === "" ? 0 : v.budget, saved: v.saved === "" ? 0 : v.saved, ...(isNew ? { createdAt: new Date().toISOString() } : {}) });
+        toast(isNew ? "Plan made. Add what it needs." : "Saved.");
+        if (isNew) location.hash = `coffers/${id}`;
+      },
+      extra: isNew ? [] : [{ label: p.done ? "Reopen" : "Mark finished", onClick: () => {
+        Store.upsert("plans", { id: p.id, done: !p.done });
+        toast(p.done ? "Reopened." : "Finished. ✦ It's kept under Finished in Plans.");
+        if (!p.done) location.hash = "coffers";
+        return true;
+      } }],
+      onDelete: isNew ? null : () => {
+        Store.remove("plans", p.id);
+        toast("Plan removed. Anything recorded in the Ledger stays there.");
+        location.hash = "coffers";
+      },
+    });
+  }
+
+  const updateItems = (planId, fn) => {
+    const p = planById(planId);
+    if (p) Store.upsert("plans", { id: planId, items: fn((p.items || []).map((it) => ({ ...it }))) });
+  };
+
+  /* buying an item: what it really cost, and (usually) a Ledger entry so the month's budget knows */
+  function buyItem(planId, itemId) {
+    const p = planById(planId), it = (p.items || []).find((x) => x.id === itemId);
+    if (!p || !it) return;
+    if (it.done) {
+      // un-buying takes back its Ledger entry too
+      if (it.txId && D().transactions.some((t) => t.id === it.txId)) Store.remove("transactions", it.txId);
+      updateItems(planId, (list) => list.map((x) => (x.id === itemId ? { ...x, done: false, actual: null, boughtOn: "", txId: "" } : x)));
+      toast(it.txId ? "Back on the list, and taken out of the Ledger." : "Back on the list.");
+      return;
+    }
+    openForm({
+      title: `Bought: ${it.name}`,
+      submitLabel: "Mark as bought",
+      values: { actual: Math.round(itemCost(it) * 100) / 100 || "", date: todayStr(), record: "yes", categoryId: p.categoryId || "" },
+      fields: [
+        { name: "actual", label: "What it cost", type: "number", required: true },
+        { name: "date", label: "On", type: "date", required: true },
+        { name: "record", label: "Record it in the Ledger", type: "segmented", options: [{ value: "yes", label: "Yes" }, { value: "no", label: "No, already there" }], span2: true },
+        { name: "categoryId", label: "Budget category", type: "select", options: categoryOptions(), span2: true },
+      ],
+      onSubmit: (v) => {
+        let txId = "";
+        if (v.record === "yes") {
+          txId = Store.uid();
+          Store.upsert("transactions", {
+            id: txId, type: "expense", amount: Math.round(v.actual * 100) / 100, date: v.date, description: `${it.name} · ${p.name}`,
+            categoryId: v.categoryId, scope: p.scope || "personal", planId: p.id, clientId: "", frequency: "one-time", notes: "", createdAt: new Date().toISOString(),
+          });
+        }
+        updateItems(planId, (list) => list.map((x) => (x.id === itemId ? { ...x, done: true, actual: Math.round(v.actual * 100) / 100, boughtOn: v.date, txId } : x)));
+        toast(txId ? "Bought, and recorded in the Ledger." : "Bought.");
+      },
+    });
+  }
+
+  function planCard(p) {
+    const st = planStats(p);
+    const kind = PLAN_KINDS.find(([k]) => k === p.kind) || PLAN_KINDS[0];
+    const pct = st.target ? Math.min(100, ((st.spent + st.saved) / st.target) * 100) : 0;
+    return `<article class="card plan-card ${esc(p.kind)}" data-plan="${p.id}" tabindex="0">
+      <div class="project-head"><h3>${esc(p.name)}</h3><span class="tag">${p.kind === "shopping" ? "⚱" : "☾"} ${esc(kind[1])}</span></div>
+      <p class="project-meta">${p.date ? `${esc(fmtDate(p.date, { weekday: "short", month: "short", day: "numeric" }))} · <span class="${st.days < 0 ? "neg" : st.days <= 14 ? "gold" : ""}">${esc(st.days < 0 ? `${-st.days} days ago` : relDay(p.date))}</span>` : "no date set"}${p.kind === "shopping" ? ` · ${st.bought}/${st.items.length} bought` : ""}</p>
+      <div class="bar ${st.over ? "over" : ""}"><span style="width:${pct}%"></span></div>
+      <p class="plan-figures"><span><b>${money(st.target)}</b> ${st.cap ? "cap" : "planned"}</span><span>${money(st.spent)} spent</span>${st.saved ? `<span>${money(st.saved)} set aside</span>` : ""}</p>
+      ${st.stillNeeded ? `<p class="plan-next">${money(st.stillNeeded)} still to find${st.perWeek ? ` · <b>${money(st.perWeek)}/week</b> to be ready` : ""}</p>` : `<p class="plan-next pos">✦ covered</p>`}
+      ${st.over ? `<p class="project-meta neg">${money(st.over)} over the cap: trim the wants?</p>` : ""}
+    </article>`;
+  }
+
+  function planPage(p) {
+    const st = planStats(p);
+    const kind = PLAN_KINDS.find(([k]) => k === p.kind) || PLAN_KINDS[0];
+    const cat = catById(p.categoryId);
+    const sorted = (st.items || []).slice().sort((a, b) => (a.done - b.done) || ((b.need !== false) - (a.need !== false)));
+    const row = (it) => `<li class="plan-item ${it.done ? "done" : ""} ${it.need === false ? "want" : ""}">
+        <button class="check-btn" data-buy="${it.id}" role="checkbox" aria-checked="${!!it.done}" aria-label="${it.done ? "Not bought" : "Bought"}: ${esc(it.name)}"><span>✦</span></button>
+        <div class="grow"><span class="title">${esc(it.name)}${it.qty > 1 ? ` <small>× ${esc(it.qty)}</small>` : ""}</span>
+          <span class="meta">${it.need === false ? "want" : "need"}${it.done ? ` · bought ${esc(fmtDate(it.boughtOn || todayStr(), { month: "short", day: "numeric" }))}${it.txId ? " · in the Ledger" : ""}${Number(it.actual) !== (Number(it.est) || 0) * (Number(it.qty) || 1) && it.est ? ` · est. ${money((Number(it.est) || 0) * (Number(it.qty) || 1))}` : ""}` : ""}</span></div>
+        <span class="amt ${it.done ? "" : "est"}">${money(itemCost(it))}</span>
+        <button class="step-x" data-item-x="${it.id}" aria-label="Remove ${esc(it.name)}">✕</button>
+      </li>`;
+    return `
+      <p style="margin:-10px 0 14px"><a href="#coffers" class="back-link">← The coffers</a></p>
+      <div class="card plan-hero">
+        <div class="card-head"><h2>${p.kind === "shopping" ? "⚱" : "☾"} ${esc(kind[1])}</h2><button class="btn sm" data-act="edit-plan" data-id="${p.id}">Amend</button></div>
+        <div class="grid cols-4 stats" style="margin-bottom:12px">
+          <div class="card stat"><div class="label">${st.cap ? "Spending cap" : "Planned"}</div><div class="value">${money(st.target)}</div><span class="sub">${st.cap ? `${money(st.planned)} planned` : `${st.items.length} item${st.items.length === 1 ? "" : "s"}`}</span></div>
+          <div class="card stat"><div class="label">Spent</div><div class="value">${money(st.spent)}</div><span class="sub">${st.bought} bought</span></div>
+          <div class="card stat"><div class="label">Set aside</div><div class="value">${money(st.saved)}</div><span class="sub">saved toward it</span></div>
+          <div class="card stat"><div class="label">Still to find</div><div class="value ${st.stillNeeded ? "gold" : "pos"}">${money(st.stillNeeded)}</div><span class="sub">${st.stillNeeded && st.perWeek ? `${money(st.perWeek)} a week for ${st.weeks} week${st.weeks === 1 ? "" : "s"}` : st.stillNeeded ? (st.days !== null && st.days <= 0 ? "the date has come" : "set a date to pace it") : "you're covered"}</span></div>
+        </div>
+        <p class="project-meta">${p.date ? `${esc(fmtDate(p.date, { weekday: "long", month: "long", day: "numeric" }))} · ${esc(st.days < 0 ? `${-st.days} days ago` : relDay(p.date))}` : "No date set"}${cat ? ` · counts toward <b>${esc(cat.name)}</b>` : ""} · ${esc(p.scope || "personal")}</p>
+        ${st.over ? `<p class="project-meta neg">The list is ${money(st.over)} over your cap. The wants come to ${money(st.wants)}.</p>` : ""}
+        ${p.notes ? `<p class="rel-terms">${esc(p.notes)}</p>` : ""}
+        <form class="inline-add" id="setAside" autocomplete="off" style="margin-top:12px">
+          <input name="amount" type="number" step="0.01" min="0" placeholder="Set aside…" aria-label="Amount to set aside" style="max-width:160px">
+          <button class="btn sm" type="submit">+ Set aside</button>
+        </form>
+      </div>
+      <div class="card" style="margin-top:18px">
+        <div class="card-head"><h2>${p.kind === "shopping" ? "The list" : "What it needs"}</h2><small>needs ${money(st.needs)} · wants ${money(st.wants)} to go</small></div>
+        <form class="inline-add" id="itemAdd" autocomplete="off">
+          <input name="name" placeholder="${p.kind === "shopping" ? "Add an item…" : "Add a cost (ticket, outfit, gift…)"}" aria-label="New item">
+          <input name="est" type="number" step="0.01" min="0" placeholder="est. $" aria-label="Estimated price" style="max-width:110px">
+          <input name="qty" type="number" step="1" min="1" value="1" aria-label="Quantity" style="max-width:70px">
+          <select name="need" aria-label="Need or want" style="width:auto"><option value="need">need</option><option value="want">want</option></select>
+          <button class="btn sm" type="submit">Add</button>
+          <button class="btn ghost sm" type="button" data-act="paste-items" data-id="${p.id}">Paste a list</button>
+        </form>
+        ${sorted.length ? `<ul class="list plan-items">${sorted.map(row).join("")}</ul>` : `<p class="arcana-empty">Nothing yet. Add what you need, with a rough price.</p>`}
+        <p class="capture-hint">Tick an item when you buy it: enter what it really cost and it's recorded in the Ledger, so your monthly budget stays true.</p>
+      </div>`;
+  }
+
+  function pasteItems(planId) {
+    openForm({
+      title: "Paste a List",
+      submitLabel: "Add them",
+      fields: [{ name: "list", label: "One item per line: “towels 14 x4”, “storage bins, 9, 3”, or just a name. End a line with ? for a want.", type: "textarea", span2: true }],
+      onSubmit: (v) => {
+        const items = Importer.parseShoppingList(v.list);
+        if (!items.length) return "Add at least one line.";
+        updateItems(planId, (list) => [...list, ...items.map((x) => ({ id: Store.uid(), ...x, done: false, actual: null, boughtOn: "", txId: "" }))]);
+        toast(`${items.length} item${items.length === 1 ? "" : "s"} added.`);
+      },
+    });
+  }
+
+  // plans with a date in a month, plus undated lists still open: what the month has coming
+  function plansComingIn(key) {
+    return D().plans.filter((p) => !p.done && (p.items || []).some((it) => !it.done) && (!p.date || p.date.slice(0, 7) === key || (p.date < `${key}-01` && key === monthKey(new Date()))));
+  }
+
   views.coffers = {
-    title: "Coffers",
-    actions: () => `<button class="btn primary" data-act="add-category">+ Category</button>`,
+    title: () => { const p = routeParam() && planById(routeParam()); return p ? p.name : "Coffers"; },
+    actions: () => {
+      if (routeParam()) return "";
+      return ui.coffersTab === "plans"
+        ? `<button class="btn" data-act="add-plan" data-kind="shopping">+ Shopping list</button><button class="btn primary" data-act="add-plan" data-kind="occasion">+ Occasion</button>`
+        : `<button class="btn primary" data-act="add-category">+ Category</button>`;
+    },
     render() {
+      const pid = routeParam();
+      if (pid) {
+        const p = planById(pid);
+        return p ? planPage(p) : `<div class="card">${empty("⚱", "That plan isn't here any more. <a href=\"#coffers\">Back to the coffers</a>.")}</div>`;
+      }
+      const tabs = `<div class="toolbar"><div class="segmented" data-ui="coffersTab">${[["budget", "Monthly budget"], ["plans", "Plans"]].map(([v, l]) => `<button class="${ui.coffersTab === v ? "on" : ""}" data-value="${v}">${l}${v === "plans" && D().plans.filter((x) => !x.done).length ? ` (${D().plans.filter((x) => !x.done).length})` : ""}</button>`).join("")}</div></div>`;
+      if (ui.coffersTab === "plans") {
+        const active = D().plans.filter((x) => !x.done).sort((a, b) => (a.date || "9999").localeCompare(b.date || "9999"));
+        const finished = D().plans.filter((x) => x.done);
+        const totalNeeded = active.reduce((s, x) => s + planStats(x).stillNeeded, 0);
+        const weekly = active.reduce((s, x) => s + (planStats(x).perWeek || 0), 0);
+        return tabs + (active.length ? `
+          <p class="plans-summary">${money(totalNeeded)} still to find across ${active.length} plan${active.length === 1 ? "" : "s"}${weekly ? ` · about <b>${money(weekly)} a week</b> keeps you on pace` : ""}.</p>
+          <div class="grid cols-2 project-grid">${active.map(planCard).join("")}</div>` : `<div class="card">${empty("⚱", "No plans yet. Make an <b>occasion</b> for an event you'll pay for (tickets, outfit, gift, travel), or a <b>shopping list</b> for things to buy. The app works out what to set aside each week.")}</div>`)
+          + (finished.length ? `<details class="finished-plans"><summary>Finished (${finished.length})</summary><div class="grid cols-2 project-grid" style="margin-top:12px">${finished.map(planCard).join("")}</div></details>` : "");
+      }
       const key = monthKey(ui.coffersMonth);
       const t = monthTotals(key);
       const cats = D().categories;
@@ -1368,14 +1573,21 @@
           }).join("") : empty("⚱", "No categories here yet.")}
         </div>`;
       };
-      return `
+      const coming = plansComingIn(key);
+      const comingTotal = coming.reduce((s, x) => s + (x.items || []).filter((it) => !it.done).reduce((a, it) => a + itemCost(it), 0), 0);
+      return tabs + `
         <div class="toolbar">
           <div class="month-nav"><button class="icon-btn" data-month="-1" aria-label="Previous month">‹</button><span>${monthLabel(ui.coffersMonth)}</span><button class="icon-btn" data-month="1" aria-label="Next month">›</button></div>
         </div>
+        ${coming.length ? `<div class="coming-up">
+          <span class="label">Coming up this month</span>
+          ${coming.map((x) => `<a class="proj-chip" href="#coffers/${esc(x.id)}">${x.kind === "shopping" ? "⚱" : "☾"} ${esc(x.name)} · ${money((x.items || []).filter((it) => !it.done).reduce((a, it) => a + itemCost(it), 0))}${x.date ? ` · ${esc(fmtDate(x.date, { month: "short", day: "numeric" }))}` : ""}</a>`).join("")}
+          <span class="total">${money(comingTotal)} planned</span>
+        </div>` : ""}
         <div class="grid cols-4 stats">
           <div class="card stat"><div class="label">Allotted</div><div class="value">${money(t.budget)}</div><div class="sub">monthly budget</div></div>
           <div class="card stat"><div class="label">Spent against it</div><div class="value">${money(budgetedSpent)}</div><div class="sub">${t.budget ? Math.round((budgetedSpent / t.budget) * 100) : 0}% of the budget</div></div>
-          <div class="card stat"><div class="label">Remaining</div><div class="value ${t.budget - budgetedSpent >= 0 ? "gold" : "neg"}">${money(t.budget - budgetedSpent)}</div><div class="sub">${unc ? `${money(unc)} uncategorized` : "all spending sorted"}</div></div>
+          <div class="card stat"><div class="label">Remaining</div><div class="value ${t.budget - budgetedSpent >= 0 ? "gold" : "neg"}">${money(t.budget - budgetedSpent)}</div><div class="sub">${comingTotal ? `${money(t.budget - budgetedSpent - comingTotal)} after what's planned` : unc ? `${money(unc)} uncategorized` : "all spending sorted"}</div></div>
           <div class="card stat"><div class="label">Income</div><div class="value pos">${money(t.income)}</div><div class="sub">net ${money(t.net)}</div></div>
         </div>
         <div class="grid cols-2" style="margin-top:18px">
@@ -1385,8 +1597,35 @@
         <p style="color:var(--ash);font-style:italic;font-size:15px;margin-top:14px">Select any category to change its budget, colour or purse.</p>`;
     },
     bind(root) {
+      bindSegments(root);
       $$("[data-month]", root).forEach((b) => b.addEventListener("click", () => { ui.coffersMonth = addMonths(ui.coffersMonth, +b.dataset.month); render(); }));
       $$("[data-cat]", root).forEach((r) => r.addEventListener("click", () => editCategory(catById(r.dataset.cat))));
+      $$("[data-plan]", root).forEach((c) => {
+        const go = () => (location.hash = `coffers/${c.dataset.plan}`);
+        c.addEventListener("click", go);
+        c.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+      });
+      const pid = routeParam();
+      if (!pid) return;
+      $$("[data-buy]", root).forEach((b) => b.addEventListener("click", () => buyItem(pid, b.dataset.buy)));
+      $$("[data-item-x]", root).forEach((b) => b.addEventListener("click", () => updateItems(pid, (list) => list.filter((x) => x.id !== b.dataset.itemX))));
+      const ia = $("#itemAdd", root);
+      if (ia) ia.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const f = new FormData(ia), name = String(f.get("name") || "").trim();
+        if (!name) return;
+        updateItems(pid, (list) => [...list, { id: Store.uid(), name, est: Math.abs(parseFloat(f.get("est")) || 0), qty: Math.max(1, parseInt(f.get("qty"), 10) || 1), need: f.get("need") !== "want", done: false, actual: null, boughtOn: "", txId: "" }]);
+        $("#itemAdd input[name=name]").focus();
+      });
+      const sa = $("#setAside", root);
+      if (sa) sa.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const amt = parseFloat(new FormData(sa).get("amount"));
+        if (!(amt > 0)) return;
+        const p = planById(pid);
+        Store.upsert("plans", { id: pid, saved: Math.round(((Number(p.saved) || 0) + amt) * 100) / 100 });
+        toast(`${money(amt)} set aside.`);
+      });
     },
   };
 
@@ -3093,6 +3332,9 @@
     "add-expense-day": () => editTransaction({ type: "expense", date: ui.ledgerDay }),
     "add-client": () => editClient(),
     "add-category": () => editCategory(),
+    "add-plan": (b) => editPlan({ kind: (b && b.dataset.kind) || "occasion" }),
+    "edit-plan": (b) => editPlan(planById(b.dataset.id)),
+    "paste-items": (b) => pasteItems(b.dataset.id),
     "add-task": () => editTask({ scope: ui.agendaScope === "business" ? "business" : "personal" }),
     "add-idea": () => editIdea(),
     "add-project": () => editProject(),

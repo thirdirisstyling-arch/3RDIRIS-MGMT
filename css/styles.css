@@ -944,3 +944,28 @@ body.dropping .view::after {
 .live-mark { font-family: var(--font-sc); font-size: 13px; letter-spacing: .06em; color: var(--rose); font-style: normal; }
 .calendar .ev.live { border-left-color: var(--rose); background: rgba(192, 122, 128, .18); color: var(--bone); }
 @media (max-width: 860px) { .calendar .ev.live { background: var(--rose); } }
+
+/* ── plans: occasions and shopping lists ──── */
+.plan-card { cursor: pointer; border-top: 2px solid var(--gold-dim); transition: transform .15s, box-shadow .15s; }
+.plan-card.occasion { border-top-color: var(--plum); }
+.plan-card:hover, .plan-card:focus-visible { transform: translateY(-2px); outline: none; box-shadow: 0 18px 34px -16px rgba(0, 0, 0, .9), 0 0 0 1px var(--gold-dim); }
+.plan-card .bar { margin-top: 10px; }
+.plan-figures { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 8px 0 0; font-size: 15px; color: var(--ash); }
+.plan-figures b { color: var(--bone); font-weight: 500; }
+.plan-next { margin: 6px 0 0; color: var(--parchment); }
+.plan-next b { color: var(--gold); font-weight: 500; }
+.plans-summary { margin: 0 0 14px; color: var(--parchment); font-style: italic; }
+.plans-summary b { color: var(--gold); font-style: normal; font-weight: 500; }
+.finished-plans { margin-top: 18px; }
+.finished-plans summary { cursor: pointer; font-family: var(--font-sc); letter-spacing: .05em; color: var(--ash); }
+.plan-hero { border-top: 2px solid var(--gold-dim); }
+.plan-items li { align-items: center; }
+.plan-items .amt { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.plan-items .amt.est { color: var(--ash); font-style: italic; }
+.plan-items li.want .title { color: var(--parchment); }
+.plan-items li.done .title { text-decoration: line-through; color: var(--smoke); }
+.plan-items li.done .check-btn { background: var(--gold); border-color: var(--gold); color: var(--ink); }
+.plan-items li:hover .step-x { opacity: 1; }
+.coming-up { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 16px; padding: 10px 14px; border: 1px dashed var(--gold-dim); border-radius: var(--radius); }
+.coming-up .label { font-family: var(--font-sc); letter-spacing: .06em; color: var(--ash); font-size: 14px; margin-right: 4px; }
+.coming-up .total { margin-left: auto; color: var(--gold); font-variant-numeric: tabular-nums; }
