@@ -333,7 +333,9 @@
      A trailing "(want)" or "?" marks a nice-to-have. */
   function parseShoppingList(text) {
     return String(text || "").split(/\r?\n/).map((line) => line.replace(/^\s*(?:[-*•]|\d+[.)]|\[[ x]?\])\s*/i, "").trim()).filter(Boolean).map((line) => {
-      let want = false;
+      let want = false, store = "";
+      line = line.replace(/\s*(\(want\)|\bwant\b|\?)\s*$/i, () => { want = true; return ""; }).trim();
+      line = line.replace(/\s+@\s*(.+)$/, (_, st) => { store = st.trim(); return ""; }).trim();
       line = line.replace(/\s*(\(want\)|\bwant\b|\?)\s*$/i, () => { want = true; return ""; }).trim();
       let name = line, est = null, qty = 1;
       if (/[,\t]/.test(line)) {
@@ -347,7 +349,7 @@
         const q = /^(.*?)\s*(?:x|×)\s*(\d+)$/i.exec(name);
         if (q) { name = q[1]; qty = +q[2]; }
       }
-      return { name: name.trim(), est: est === null ? 0 : Math.abs(est), qty: Math.max(1, qty), need: !want };
+      return { name: name.trim(), est: est === null ? 0 : Math.abs(est), qty: Math.max(1, qty), need: !want, store, options: [], pick: "" };
     }).filter((r) => r.name);
   }
 

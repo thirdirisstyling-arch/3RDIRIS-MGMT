@@ -979,6 +979,8 @@
     codexTab: ["clients", "partnership", "affiliate", "source", "collaborator", "all"].includes(prefs.codexTab) ? prefs.codexTab : "clients",
     codexShowClosed: false,
     coffersTab: prefs.coffersTab === "plans" ? "plans" : "budget",
+    planGroup: prefs.planGroup === "store" ? "store" : "none",
+    openItems: new Set(),
     workTab: ["projects", "timeline", "content", "metrics"].includes(prefs.workTab) ? prefs.workTab : "projects",
     metricPlatform: "",
     metricRange: "90",
@@ -1344,7 +1346,7 @@
       const b = e.target.closest("button");
       if (!b) return;
       ui[seg.dataset.ui] = b.dataset.value;
-      if (["ledgerView", "agendaView", "workTab", "contentView", "coffersTab"].includes(seg.dataset.ui)) { prefs[seg.dataset.ui] = b.dataset.value; savePrefs(); }
+      if (["ledgerView", "agendaView", "workTab", "contentView", "coffersTab", "planGroup"].includes(seg.dataset.ui)) { prefs[seg.dataset.ui] = b.dataset.value; savePrefs(); }
       render();
     }));
   }
@@ -1352,6 +1354,23 @@
   /* ── Plans: spending you can see coming, so it isn't sporadic ── */
   const PLAN_KINDS = [["occasion", "Occasion", "an event to pay for"], ["shopping", "Shopping list", "things to buy"]];
   const planById = (id) => D().plans.find((p) => p.id === id);
+  /* price options for a list item: the same thing at different stores and sizes, compared per unit */
+  // "cans" and "can" are the same unit (written without regex lookbehind, which older Safari can't parse)
+  const normUnit = (u) => { const t = String(u || "").trim().toLowerCase(); return t.length > 2 && t.endsWith("s") && !t.endsWith("ss") ? t.slice(0, -1) : t; };
+  const unitPrice = (o) => (Number(o.amount) > 0 && Number(o.price) > 0 ? Number(o.price) / Number(o.amount) : null);
+  function bestOption(it) {
+    const opts = (it.options || []).filter((o) => Number(o.price) > 0);
+    if (!opts.length) return null;
+    // compare per unit when at least two options share a unit; otherwise by price
+    const byUnit = {};
+    opts.filter((o) => unitPrice(o) !== null && normUnit(o.unit)).forEach((o) => (byUnit[normUnit(o.unit)] ||= []).push(o));
+    const shared = Object.values(byUnit).sort((x, y) => y.length - x.length)[0];
+    if (shared && shared.length >= 2) return shared.reduce((m, o) => (unitPrice(o) < unitPrice(m) ? o : m));
+    return opts.reduce((m, o) => (Number(o.price) < Number(m.price) ? o : m));
+  }
+  const storesInUse = () => [...new Set(D().plans.flatMap((p) => (p.items || []).flatMap((it) => [it.store, ...(it.options || []).map((o) => o.store)])).filter(Boolean).map((x) => x.trim()))].sort((a, b) => a.localeCompare(b));
+  const fmtUnitPrice = (o) => { const u = unitPrice(o); return u === null ? "" : `${money(u)} / ${normUnit(o.unit) || "unit"}`; };
+
   const itemCost = (it) => (it.done && it.actual !== null && it.actual !== undefined && it.actual !== "" ? Number(it.actual) : (Number(it.est) || 0) * (Number(it.qty) || 1));
 
   function planStats(p) {
@@ -1437,7 +1456,7 @@
           txId = Store.uid();
           Store.upsert("transactions", {
             id: txId, type: "expense", amount: Math.round(v.actual * 100) / 100, date: v.date, description: `${it.name} · ${p.name}`,
-            categoryId: v.categoryId, scope: p.scope || "personal", planId: p.id, clientId: "", frequency: "one-time", notes: "", createdAt: new Date().toISOString(),
+            categoryId: v.categoryId, scope: p.scope || "personal", planId: p.id, clientId: "", frequency: "one-time", notes: it.store ? `bought at ${it.store}` : "", createdAt: new Date().toISOString(),
           });
         }
         updateItems(planId, (list) => list.map((x) => (x.id === itemId ? { ...x, done: true, actual: Math.round(v.actual * 100) / 100, boughtOn: v.date, txId } : x)));
@@ -1465,13 +1484,50 @@
     const kind = PLAN_KINDS.find(([k]) => k === p.kind) || PLAN_KINDS[0];
     const cat = catById(p.categoryId);
     const sorted = (st.items || []).slice().sort((a, b) => (a.done - b.done) || ((b.need !== false) - (a.need !== false)));
-    const row = (it) => `<li class="plan-item ${it.done ? "done" : ""} ${it.need === false ? "want" : ""}">
+    const optionsPanel = (it) => {
+      const best = bestOption(it);
+      return `<li class="plan-options">
+        <div class="opt-list">${(it.options || []).map((o) => `<div class="opt ${o.id === it.pick ? "picked" : ""}">
+            <button class="pick" data-pick="${it.id}:${o.id}" aria-pressed="${o.id === it.pick}" title="${o.id === it.pick ? "Buying here" : "Buy here"}">${o.id === it.pick ? "✦" : "○"}</button>
+            <span class="opt-store">${esc(o.store || "somewhere")}${o.link && linkHref(o.link) ? ` <a href="${esc(linkHref(o.link))}" target="_blank" rel="noopener noreferrer" aria-label="Open ${esc(o.store)} link">↗</a>` : ""}${best && o.id === best.id && (it.options || []).length > 1 ? ` <span class="tag best">best value</span>` : ""}</span>
+            <span class="opt-size">${o.amount ? `${esc(o.amount)} ${esc(o.unit || "")}` : ""}</span>
+            <span class="opt-price">${money(o.price)}</span>
+            <span class="opt-unit">${esc(fmtUnitPrice(o))}</span>
+            <button class="step-x" data-opt-x="${it.id}:${o.id}" aria-label="Remove the ${esc(o.store)} option">✕</button>
+          </div>`).join("") || `<p class="arcana-empty">No prices yet. Add where you could buy it, the price, and the size, e.g. Amazon · $20 · 12 cans.</p>`}</div>
+        <form class="inline-add opt-add" data-opt-add="${it.id}" autocomplete="off">
+          <input name="store" placeholder="Store" list="dl-stores" aria-label="Store">
+          <input name="price" type="number" step="0.01" min="0" placeholder="$" aria-label="Price" style="max-width:90px">
+          <input name="amount" type="number" step="any" min="0" placeholder="size" aria-label="Size, e.g. 24" style="max-width:80px">
+          <input name="unit" placeholder="cans, oz…" aria-label="Unit" style="max-width:100px">
+          <input name="link" type="url" placeholder="link (optional)" aria-label="Link" style="max-width:180px">
+          <button class="btn sm" type="submit">Add price</button>
+        </form>
+      </li>`;
+    };
+    const row = (it) => {
+      const n = (it.options || []).length, open = ui.openItems.has(it.id), best = bestOption(it);
+      const picked = (it.options || []).find((o) => o.id === it.pick);
+      return `<li class="plan-item ${it.done ? "done" : ""} ${it.need === false ? "want" : ""}">
         <button class="check-btn" data-buy="${it.id}" role="checkbox" aria-checked="${!!it.done}" aria-label="${it.done ? "Not bought" : "Bought"}: ${esc(it.name)}"><span>✦</span></button>
-        <div class="grow"><span class="title">${esc(it.name)}${it.qty > 1 ? ` <small>× ${esc(it.qty)}</small>` : ""}</span>
-          <span class="meta">${it.need === false ? "want" : "need"}${it.done ? ` · bought ${esc(fmtDate(it.boughtOn || todayStr(), { month: "short", day: "numeric" }))}${it.txId ? " · in the Ledger" : ""}${Number(it.actual) !== (Number(it.est) || 0) * (Number(it.qty) || 1) && it.est ? ` · est. ${money((Number(it.est) || 0) * (Number(it.qty) || 1))}` : ""}` : ""}</span></div>
+        <div class="grow"><button class="item-title" data-item-edit="${it.id}" title="Edit">${esc(it.name)}${it.qty > 1 ? ` <small>× ${esc(it.qty)}</small>` : ""}</button>
+          <span class="meta">${it.need === false ? "want" : "need"}${it.store ? ` · <span class="store">@ ${esc(it.store)}</span>` : ""}${picked && picked.amount ? ` · ${esc(picked.amount)} ${esc(picked.unit || "")}` : ""}${!it.done && best && picked && best.id !== picked.id ? ` · <span class="gold">${esc(best.store)} is better value</span>` : ""}${it.done ? ` · bought ${esc(fmtDate(it.boughtOn || todayStr(), { month: "short", day: "numeric" }))}${it.txId ? " · in the Ledger" : ""}${Number(it.actual) !== (Number(it.est) || 0) * (Number(it.qty) || 1) && it.est ? ` · est. ${money((Number(it.est) || 0) * (Number(it.qty) || 1))}` : ""}` : ""}</span></div>
+        <button class="steps-chip ${open ? "on" : ""}" data-opts="${it.id}" aria-expanded="${open}" title="Compare prices">⚖ ${n ? `${n} price${n === 1 ? "" : "s"}` : "<span class=\"hide-sm\">compare </span>prices"}</button>
         <span class="amt ${it.done ? "" : "est"}">${money(itemCost(it))}</span>
         <button class="step-x" data-item-x="${it.id}" aria-label="Remove ${esc(it.name)}">✕</button>
-      </li>`;
+      </li>${open ? optionsPanel(it) : ""}`;
+    };
+    // optionally grouped by where each thing will be bought, with a total per store
+    const listHTML = (items) => {
+      if (ui.planGroup !== "store") return `<ul class="list plan-items">${items.map(row).join("")}</ul>`;
+      const groups = {};
+      items.forEach((it) => (groups[it.store || ""] ||= []).push(it));
+      return Object.keys(groups).sort((a, b) => (a ? 0 : 1) - (b ? 0 : 1) || a.localeCompare(b)).map((store) => {
+        const list = groups[store], left = list.filter((it) => !it.done);
+        return `<h3 class="store-head">${store ? esc(store) : "Store not chosen"}<small>${left.length} to buy · ${money(left.reduce((x, it) => x + itemCost(it), 0))}</small></h3>
+          <ul class="list plan-items">${list.map(row).join("")}</ul>`;
+      }).join("");
+    };
     return `
       <p style="margin:-10px 0 14px"><a href="#coffers" class="back-link">← The coffers</a></p>
       <div class="card plan-hero">
@@ -1496,13 +1552,45 @@
           <input name="name" placeholder="${p.kind === "shopping" ? "Add an item…" : "Add a cost (ticket, outfit, gift…)"}" aria-label="New item">
           <input name="est" type="number" step="0.01" min="0" placeholder="est. $" aria-label="Estimated price" style="max-width:110px">
           <input name="qty" type="number" step="1" min="1" value="1" aria-label="Quantity" style="max-width:70px">
+          <input name="store" placeholder="where (optional)" list="dl-stores" aria-label="Where you'll buy it" style="max-width:170px">
           <select name="need" aria-label="Need or want" style="width:auto"><option value="need">need</option><option value="want">want</option></select>
           <button class="btn sm" type="submit">Add</button>
           <button class="btn ghost sm" type="button" data-act="paste-items" data-id="${p.id}">Paste a list</button>
         </form>
-        ${sorted.length ? `<ul class="list plan-items">${sorted.map(row).join("")}</ul>` : `<p class="arcana-empty">Nothing yet. Add what you need, with a rough price.</p>`}
+        <datalist id="dl-stores">${storesInUse().map((x) => `<option value="${esc(x)}">`).join("")}</datalist>
+        ${sorted.length ? `<div class="toolbar list-tools"><div class="segmented" data-ui="planGroup">${[["none", "One list"], ["store", "By store"]].map(([v, l]) => `<button class="${ui.planGroup === v ? "on" : ""}" data-value="${v}">${l}</button>`).join("")}</div><small>Use ⚖ to compare prices and sizes at different stores.</small></div>${listHTML(sorted)}` : `<p class="arcana-empty">Nothing yet. Add what you need, with a rough price.</p>`}
         <p class="capture-hint">Tick an item when you buy it: enter what it really cost and it's recorded in the Ledger, so your monthly budget stays true.</p>
       </div>`;
+  }
+
+  // choosing where to buy sets the item's store and its estimate (the option's price, per pack)
+  function pickOption(planId, itemId, optId, quiet = false) {
+    updateItems(planId, (list) => list.map((x) => {
+      if (x.id !== itemId) return x;
+      const o = (x.options || []).find((y) => y.id === optId);
+      return o ? { ...x, pick: o.id, store: o.store, est: Number(o.price) || x.est } : x;
+    }));
+    if (!quiet) toast("Plan updated to that price.");
+  }
+
+  function editItem(planId, itemId) {
+    const it = ((planById(planId) || {}).items || []).find((x) => x.id === itemId);
+    if (!it) return;
+    openForm({
+      title: it.name,
+      values: { name: it.name, est: it.est || "", qty: it.qty || 1, store: it.store || "", need: it.need === false ? "want" : "need" },
+      fields: [
+        { name: "name", label: "Item", required: true, span2: true },
+        { name: "est", label: "Price each (estimate)", type: "number" },
+        { name: "qty", label: "How many", type: "number", step: "1", min: 1 },
+        { name: "store", label: "Where you'll buy it", datalist: storesInUse() },
+        { name: "need", label: "Need or want", type: "segmented", options: [{ value: "need", label: "Need" }, { value: "want", label: "Want" }] },
+      ],
+      onSubmit: (v) => {
+        updateItems(planId, (list) => list.map((x) => (x.id === itemId ? { ...x, name: v.name, est: Math.abs(+v.est || 0), qty: Math.max(1, Math.round(+v.qty || 1)), store: v.store, need: v.need !== "want" } : x)));
+      },
+      onDelete: () => updateItems(planId, (list) => list.filter((x) => x.id !== itemId)),
+    });
   }
 
   function pasteItems(planId) {
@@ -1609,12 +1697,40 @@
       if (!pid) return;
       $$("[data-buy]", root).forEach((b) => b.addEventListener("click", () => buyItem(pid, b.dataset.buy)));
       $$("[data-item-x]", root).forEach((b) => b.addEventListener("click", () => updateItems(pid, (list) => list.filter((x) => x.id !== b.dataset.itemX))));
+      $$("[data-opts]", root).forEach((b) => b.addEventListener("click", () => {
+        const id = b.dataset.opts;
+        ui.openItems.has(id) ? ui.openItems.delete(id) : ui.openItems.add(id);
+        render();
+        const f = $(`[data-opt-add="${id}"] input[name=store]`);
+        if (f && ui.openItems.has(id)) f.focus();
+      }));
+      $$("[data-item-edit]", root).forEach((b) => b.addEventListener("click", () => editItem(pid, b.dataset.itemEdit)));
+      $$("[data-pick]", root).forEach((b) => b.addEventListener("click", () => {
+        const [itemId, optId] = b.dataset.pick.split(":");
+        pickOption(pid, itemId, optId);
+      }));
+      $$("[data-opt-x]", root).forEach((b) => b.addEventListener("click", () => {
+        const [itemId, optId] = b.dataset.optX.split(":");
+        updateItems(pid, (list) => list.map((x) => (x.id === itemId ? { ...x, options: (x.options || []).filter((o) => o.id !== optId), pick: x.pick === optId ? "" : x.pick } : x)));
+      }));
+      $$("[data-opt-add]", root).forEach((form) => form.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const f = new FormData(form), itemId = form.dataset.optAdd;
+        const opt = { id: Store.uid(), store: String(f.get("store") || "").trim(), price: Math.abs(parseFloat(f.get("price")) || 0), amount: Math.abs(parseFloat(f.get("amount")) || 0), unit: String(f.get("unit") || "").trim(), link: String(f.get("link") || "").trim() };
+        if (!opt.store && !opt.price) return;
+        const it = (planById(pid).items || []).find((x) => x.id === itemId);
+        updateItems(pid, (list) => list.map((x) => (x.id === itemId ? { ...x, options: [...(x.options || []), opt] } : x)));
+        // the first price found becomes the plan until another is picked
+        if (it && !it.pick) pickOption(pid, itemId, opt.id, true);
+        const again = $(`[data-opt-add="${itemId}"] input[name=store]`);
+        if (again) again.focus();
+      }));
       const ia = $("#itemAdd", root);
       if (ia) ia.addEventListener("submit", (e) => {
         e.preventDefault();
         const f = new FormData(ia), name = String(f.get("name") || "").trim();
         if (!name) return;
-        updateItems(pid, (list) => [...list, { id: Store.uid(), name, est: Math.abs(parseFloat(f.get("est")) || 0), qty: Math.max(1, parseInt(f.get("qty"), 10) || 1), need: f.get("need") !== "want", done: false, actual: null, boughtOn: "", txId: "" }]);
+        updateItems(pid, (list) => [...list, { id: Store.uid(), name, est: Math.abs(parseFloat(f.get("est")) || 0), qty: Math.max(1, parseInt(f.get("qty"), 10) || 1), store: String(f.get("store") || "").trim(), need: f.get("need") !== "want", options: [], pick: "", done: false, actual: null, boughtOn: "", txId: "" }]);
         $("#itemAdd input[name=name]").focus();
       });
       const sa = $("#setAside", root);
