@@ -1005,3 +1005,9 @@ body.dropping .view::after {
   .opt-size { grid-area: size; } .opt-unit { grid-area: unit; text-align: right; }
   .opt-add input { max-width: none !important; flex: 1 1 40%; }
 }
+
+/* skipped occurrences of recurring entries */
+tr.projected.skipped td { opacity: .45; text-decoration: line-through; text-decoration-color: var(--smoke); background: none; }
+tr.projected.skipped td small, tr.projected.skipped td i { text-decoration: none; }
+.link-btn { all: unset; cursor: pointer; color: var(--gold); text-decoration: underline; text-underline-offset: 2px; font-style: italic; }
+.link-btn:hover, .link-btn:focus-visible { color: var(--bone); }

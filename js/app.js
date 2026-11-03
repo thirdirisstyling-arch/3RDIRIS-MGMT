@@ -90,30 +90,34 @@
   function payDays(t) {
     const saved = (t.days || []).map(Number).filter((n) => n >= 1 && n <= 31);
     if (saved.length) return [...new Set(saved)].sort((a, b) => a - b);
-    const d = parseYmd(t.date).getDate();
+    const d = parseYmd(t.covers || t.date).getDate();
     return d <= 15 ? [d, d + 15] : [d - 15, d];
   }
   const parseDays = (text) => [...new Set(String(text || "").split(/[^\d]+/).map(Number).filter((n) => n >= 1 && n <= 31))].sort((a, b) => a - b);
 
   /* scheduled dates after an entry's own date, up to `to` (inclusive) */
+  // the due date an entry pays: what it says it covers (a payment made early or late), else its own date
+  const anchorOf = (t) => (isRecurring(t.frequency) && t.covers) || t.date;
+
   function occurrencesAfter(t, to) {
     const out = [];
+    const start = anchorOf(t);
     if (t.frequency === "semimonthly") {
       const days = payDays(t);
-      const d0 = parseYmd(t.date);
+      const d0 = parseYmd(start);
       for (let i = 0; i < 400; i++) {
         const y = d0.getFullYear(), m = d0.getMonth() + i;
         const yy = new Date(y, m, 1).getFullYear(), mm = new Date(y, m, 1).getMonth();
         if (ymd(new Date(yy, mm, 1)) > to) break;
         for (const day of days) {
           const s = ymd(new Date(yy, mm, Math.min(day, lastOfMonth(yy, mm))));
-          if (s > t.date && s <= to) out.push(s);
+          if (s > start && s <= to) out.push(s);
         }
       }
       return [...new Set(out)];
     }
     for (let n = 1; n < 1000; n++) {
-      const s = stepDate(t.date, t.frequency, n);
+      const s = stepDate(start, t.frequency, n);
       if (s > to) break;
       out.push(s);
     }
@@ -126,34 +130,68 @@
     const latest = {};
     D().transactions.forEach((t) => {
       const k = seriesKey(t), cur = latest[k];
-      if (!cur || t.date > cur.date || (t.date === cur.date && (t.createdAt || "") > (cur.createdAt || ""))) latest[k] = t;
+      if (!cur || anchorOf(t) > anchorOf(cur) || (anchorOf(t) === anchorOf(cur) && (t.createdAt || "") > (cur.createdAt || ""))) latest[k] = t;
     });
     return latest;
   }
 
-  /* projected copies of recurring series between from and to (inclusive) */
-  function expectedEntries(from, to) {
-    const out = [];
+  /* dates skipped in each series (paid some other way, or simply not due), gathered from every entry,
+     so a skip outlives the entry it was made on */
+  function skipsBySeries() {
+    const out = {};
+    D().transactions.forEach((t) => (t.skips || []).forEach((d) => (out[seriesKey(t)] ||= new Set()).add(d)));
+    return out;
+  }
+
+  /* projected copies of recurring series between from and to (inclusive); skipped ones only when asked */
+  function expectedEntries(from, to, { includeSkipped = false } = {}) {
+    const out = [], skips = skipsBySeries();
     Object.values(latestBySeries()).filter((t) => isRecurring(t.frequency)).forEach((t) => {
-      occurrencesAfter(t, to).filter((d) => d >= from).forEach((date) => out.push({ source: t, date }));
+      const skipped = skips[seriesKey(t)] || new Set();
+      occurrencesAfter(t, to).filter((d) => d >= from).forEach((date) => {
+        if (!skipped.has(date) || includeSkipped) out.push({ source: t, date, skipped: skipped.has(date) });
+      });
     });
     return out.sort((a, b) => a.date.localeCompare(b.date));
   }
 
-  /* when an entry is next due: a recurring series' next unrecorded date, or a one-time entry's due date */
+  /* when an entry is next due: a recurring series' next unrecorded, unskipped date, or a one-time entry's due date */
   function nextDueOf(t, latest = latestBySeries()) {
     if (!isRecurring(t.frequency)) return t.dueDate || "";
     if (latest[seriesKey(t)] !== t) return "";
-    const horizon = stepDate(t.date, "annual", 2);
-    return occurrencesAfter(t, horizon)[0] || "";
+    const skipped = skipsBySeries()[seriesKey(t)] || new Set();
+    const horizon = stepDate(anchorOf(t), "annual", 2);
+    return occurrencesAfter(t, horizon).find((d) => !skipped.has(d)) || "";
   }
 
+  function skipOccurrence(source, date) {
+    Store.upsert("transactions", { id: source.id, skips: [...new Set([...(source.skips || []), date])] });
+    toast(`Skipped ${fmtDate(date, { month: "short", day: "numeric" })}. It won't be expected; the schedule carries on after it.`);
+  }
+  function unskipOccurrence(source, date) {
+    const key = seriesKey(source);
+    D().transactions.filter((t) => seriesKey(t) === key && (t.skips || []).includes(date))
+      .forEach((t) => Store.upsert("transactions", { id: t.id, skips: t.skips.filter((d) => d !== date) }));
+    toast(`${fmtDate(date, { month: "short", day: "numeric" })} is expected again.`);
+  }
+
+  /* recording a projected payment: it counts as that due date, even if paid early or late */
   function logExpected(e) {
     const t = e.source;
+    if (e.skipped) {
+      openForm({
+        title: `Skipped: ${t.description}`,
+        submitLabel: "Expect it again",
+        fields: [{ name: "why", type: "note" }],
+        onChange: (v, root) => { $("#why", root).textContent = `The ${fmtDate(e.date, { weekday: "short", month: "long", day: "numeric" })} payment is skipped, so it isn't counted in projections.`; },
+        onSubmit: () => unskipOccurrence(t, e.date),
+      });
+      return;
+    }
     editTransaction({
       type: t.type, description: t.description, amount: t.amount, scope: t.scope, categoryId: t.categoryId,
-      clientId: t.clientId, frequency: t.frequency, days: t.days, date: e.date,
-    });
+      clientId: t.clientId, frequency: t.frequency, days: t.days, date: e.date, covers: e.date,
+    }, { extra: [{ label: "Skip this one", onClick: () => { skipOccurrence(t, e.date); return true; } }] });
   }
 
   function dueLabel(s, { next = false } = {}) {
@@ -410,9 +448,10 @@
   const clientOptions = (blankLabel = "— none —") => [{ value: "", label: blankLabel }, ...D().clients.slice().sort((a, b) => a.name.localeCompare(b.name)).map((c) => ({ value: c.id, label: c.name }))];
   const categoryOptions = () => [{ value: "", label: "— uncategorized —" }, ...D().categories.map((c) => ({ value: c.id, label: `${c.name} · ${c.scope}` }))];
 
-  function editTransaction(tx = {}) {
+  function editTransaction(tx = {}, { extra = [] } = {}) {
     const isNew = !tx.id;
     openForm({
+      extra,
       title: isNew ? (tx.type === "income" ? "Record Income" : "Record Expense") : "Amend Entry",
       values: { type: "expense", date: todayStr(), scope: "personal", frequency: "one-time", ...tx, days: (tx.days || []).join(", ") },
       fields: [
@@ -425,6 +464,7 @@
         { name: "frequency", label: "Frequency", type: "select", options: FREQUENCIES.map(([value, label]) => ({ value, label })) },
         { name: "dueDate", label: "Due date", type: "date" },
         { name: "days", label: "Days of the month", placeholder: "e.g. 3, 16" },
+        { name: "covers", label: "Counts as the payment due on", type: "date" },
         { name: "clientId", label: "Client", type: "select", options: clientOptions() },
         { name: "projectId", label: "Project", type: "select", options: projectOptions(tx.projectId) },
         { name: "partnerId", label: "Partner or source", type: "select", options: partnerOptions(tx.partnerId), span2: true },
@@ -437,6 +477,8 @@
         const recurring = isRecurring(v.frequency);
         $('[name="dueDate"]', root).closest("label").style.display = recurring ? "none" : "";
         $('[name="days"]', root).closest("label").style.display = v.frequency === "semimonthly" ? "" : "none";
+        // paid early or late: which due date this payment covers, so the schedule doesn't shift
+        $('[name="covers"]', root).closest("label").style.display = recurring ? "" : "none";
         let hint = $("#nextDueHint", root);
         if (!hint) {
           hint = document.createElement("p");
@@ -444,9 +486,11 @@
           hint.className = "form-hint";
           $('[name="days"]', root).closest("label").after(hint);
         }
-        const next = recurring && v.date ? occurrencesAfter({ date: v.date, frequency: v.frequency, days: parseDays(v.days) }, stepDate(v.date, "annual", 2))[0] : "";
+        const draft = { date: v.date, covers: v.covers, frequency: v.frequency, days: parseDays(v.days) };
+        const skipped = [...((skipsBySeries()[seriesKey({ type: v.type, description: v.description })]) || [])].sort();
+        const next = recurring && v.date ? occurrencesAfter(draft, stepDate(anchorOf(draft), "annual", 2)).find((d) => !skipped.includes(d)) : "";
         hint.style.display = next ? "" : "none";
-        hint.innerHTML = next ? `↻ Next due <b>${esc(fmtDate(next, { weekday: "short", month: "long", day: "numeric" }))}</b>${v.frequency === "semimonthly" ? ` · on the ${esc(payDays({ date: v.date, days: parseDays(v.days) }).map(ordinal).join(" & "))}` : ""}` : "";
+        hint.innerHTML = next ? `↻ Next due <b>${esc(fmtDate(next, { weekday: "short", month: "long", day: "numeric" }))}</b>${v.frequency === "semimonthly" ? ` · on the ${esc(payDays(draft).map(ordinal).join(" & "))}` : ""}${v.covers && v.covers !== v.date ? ` · paid ${v.covers > v.date ? "early" : "late"} for ${esc(fmtDate(v.covers, { month: "short", day: "numeric" }))}` : ""}${skipped.filter((d) => d >= todayStr()).length ? ` · skipping ${esc(skipped.filter((d) => d >= todayStr()).map((d) => fmtDate(d, { month: "short", day: "numeric" })).join(", "))}` : ""}` : "";
       },
       onSubmit: (v) => {
         if (!(v.amount > 0)) return "Amount must be more than zero.";
@@ -455,6 +499,7 @@
         if (v.frequency === "semimonthly" && v.days && days.length < 2) return "Give two days of the month, like 3, 16.";
         v.days = v.frequency === "semimonthly" ? (days.length ? days : payDays({ date: v.date })) : [];
         if (isRecurring(v.frequency)) v.dueDate = "";
+        else v.covers = "";
         Store.upsert("transactions", { ...tx, ...v, amount: Math.round(v.amount * 100) / 100 });
         toast(isNew ? "Inscribed in the ledger." : "Entry amended.");
       },
@@ -1120,7 +1165,7 @@
       $$("[data-goto]", root).forEach((li) => li.addEventListener("click", () => (location.hash = li.dataset.goto)));
       $$("[data-expected]", root).forEach((li) => li.addEventListener("click", () => {
         const [id, date] = li.dataset.expected.split("@");
-        logExpected({ source: D().transactions.find((t) => t.id === id), date });
+        logExpected({ source: D().transactions.find((t) => t.id === id), date, skipped: li.dataset.skipped === "1" });
       }));
     },
   };
@@ -1181,8 +1226,8 @@
       const projected = ui.ledgerProjected ? projectedRows(key) : [];
       const inc = rows.filter((r) => r.type === "income").reduce((s, r) => s + r.amount, 0);
       const exp = rows.filter((r) => r.type === "expense").reduce((s, r) => s + r.amount, 0);
-      const pInc = projected.filter((r) => r.type === "income").reduce((s, r) => s + r.amount, 0);
-      const pExp = projected.filter((r) => r.type === "expense").reduce((s, r) => s + r.amount, 0);
+      const pInc = projected.filter((r) => r.type === "income" && !r.skipped).reduce((s, r) => s + r.amount, 0);
+      const pExp = projected.filter((r) => r.type === "expense" && !r.skipped).reduce((s, r) => s + r.amount, 0);
       const pSub = (v, label) => (projected.length ? `<div class="sub">${label} ${v}</div>` : "");
       const seg = (name, cur, opts) => `<div class="segmented" data-ui="${name}">${opts.map(([v, l]) => `<button class="${cur === v ? "on" : ""}" data-value="${v}">${l}</button>`).join("")}</div>`;
       const filtered = ui.ledgerSearch || ui.ledgerType !== "all" || ui.ledgerScope !== "all";
@@ -1232,10 +1277,15 @@
         });
         b.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); b.click(); } });
       });
+      $$("[data-skip]", root).forEach((b) => b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const [id, date] = b.dataset.skip.split("@");
+        skipOccurrence(D().transactions.find((t) => t.id === id), date);
+      }));
       $$("[data-expected]", root).forEach((el) => el.addEventListener("click", (e) => {
         e.stopPropagation();
         const [id, date] = el.dataset.expected.split("@");
-        logExpected({ source: D().transactions.find((t) => t.id === id), date });
+        logExpected({ source: D().transactions.find((t) => t.id === id), date, skipped: el.dataset.skipped === "1" });
       }));
     },
   };
@@ -1244,8 +1294,8 @@
   function projectedRows(key) {
     const [y, m] = key.split("-").map(Number);
     const from = `${key}-01`, to = `${key}-${pad(lastOfMonth(y, m - 1))}`;
-    return expectedEntries(from, to).filter((e) => passesFilters(e.source)).map((e) => ({
-      projected: true, source: e.source, id: `${e.source.id}@${e.date}`, date: e.date, _due: e.date,
+    return expectedEntries(from, to, { includeSkipped: true }).filter((e) => passesFilters(e.source)).map((e) => ({
+      projected: true, skipped: e.skipped, source: e.source, id: `${e.source.id}@${e.date}`, date: e.date, _due: e.date,
       type: e.source.type, description: e.source.description, amount: e.source.amount, scope: e.source.scope,
       categoryId: e.source.categoryId, clientId: e.source.clientId, frequency: e.source.frequency, days: e.source.days,
     }));
@@ -1260,18 +1310,18 @@
       <tbody>${rows.map((t) => {
         const cl = clientById(t.clientId);
         const meta = t.projected
-          ? `projected${t.date < todayStr() ? " · not recorded yet" : ""}`
+          ? t.skipped ? "skipped · select to expect it again" : `projected${t.date < todayStr() ? " · not recorded yet" : ""} · <button class="link-btn" data-skip="${t.source.id}@${t.date}">skip this one</button>`
           : [cl && esc(cl.name), projectChip(t.projectId), partnerChip(t.partnerId), t.planId && planById(t.planId) ? `<a class="proj-chip" href="#coffers/${esc(t.planId)}">⚱ ${esc(planById(t.planId).name)}</a>` : "", t.notes && esc(t.notes)].filter(Boolean).join(" · ");
         // recurring: when the series is next due; one-time: its own due date
         const due = t.projected
-          ? `<span class="${dueClass(t.date)}">${esc(t.date < todayStr() ? "past due" : dueLabel(t.date))}</span>`
+          ? t.skipped ? `<small>skipped</small>` : `<span class="${dueClass(t.date)}">${esc(t.date < todayStr() ? "past due" : dueLabel(t.date))}</span>`
           : t._due
             ? `<span class="${isRecurring(t.frequency) ? dueClass(t._due) : t._due >= todayStr() ? dueClass(t._due) : ""}">${esc(dueLabel(t._due, { next: isRecurring(t.frequency) }))}</span>`
             : `<small>—</small>`;
         const freq = t.frequency ? `<span class="tag ${isRecurring(t.frequency) ? "freq" : ""}">${isRecurring(t.frequency) ? "↻ " : ""}${esc(freqLabel(t.frequency))}${t.frequency === "semimonthly" ? ` · ${esc(payDays(t).map(ordinal).join(" & "))}` : ""}</span>` : "";
         // on phones the hidden columns collapse into the description line
         const small = [isRecurring(t.frequency) ? freqLabel(t.frequency) : "", t.projected ? (t.date < todayStr() ? "past due" : "") : t._due ? dueLabel(t._due, { next: isRecurring(t.frequency) }) : ""].filter(Boolean).join(" · ");
-        return `<tr ${t.projected ? `data-expected="${t.source.id}@${t.date}" class="projected" title="Projected from ${esc(freqLabel(t.frequency).toLowerCase())} ${esc(t.description)}. Select to record it."` : `data-tx="${t.id}"`} style="cursor:pointer">
+        return `<tr ${t.projected ? `data-expected="${t.source.id}@${t.date}" ${t.skipped ? `data-skipped="1"` : ""} class="projected ${t.skipped ? "skipped" : ""}" title="${t.skipped ? "Skipped. Select to expect it again." : `Projected from ${esc(freqLabel(t.frequency).toLowerCase())} ${esc(t.description)}. Select to record it or skip it.`}"` : `data-tx="${t.id}"`} style="cursor:pointer">
           <td style="white-space:nowrap">${fmtDate(t.date, { month: "short", day: "numeric" })}</td>
           <td>${t.projected ? "↻ " : ""}${esc(t.description)}${meta ? `<br><small><i>${meta}</i></small>` : ""}${small ? `<small class="show-sm gold"><br>${esc(small)}</small>` : ""}</td>
           <td class="hide-sm">${catTag(t)}</td>
