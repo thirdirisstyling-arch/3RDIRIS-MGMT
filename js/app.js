@@ -1008,6 +1008,8 @@
     ledgerMonth: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
     ledgerType: "all",
     ledgerScope: "all",
+    horizonFilter: "all",
+    horizonAll: false,
     ledgerSearch: "",
     ledgerView: prefs.ledgerView === "calendar" ? "calendar" : "list",
     ledgerSort: prefs.ledgerSort && prefs.ledgerSort.key ? prefs.ledgerSort : { key: "date", dir: "desc" },
@@ -1044,129 +1046,173 @@
 
   const views = {};
 
+  /* everything with a date in the next two weeks, from every section, as one list; plus what's slipped past */
+  const HORIZON_DAYS = 14;
+  const HORIZON_KINDS = [["all", "All"], ["money", "Money"], ["people", "People"], ["work", "Workings"]];
+  function horizonItems() {
+    const d = D(), today = todayStr(), end = stepDays(today, HORIZON_DAYS - 1), out = [];
+    const amt = (t) => `<span class="h-amt ${t.type === "income" ? "pos" : ""}">${t.type === "income" ? "+" : "−"}${money(t.amount)}</span>`;
+    d.appointments.filter((a) => a.date >= today && a.date <= end).forEach((a) => {
+      const c = clientById(a.clientId);
+      out.push({ date: a.date, time: a.start || "", kind: "people", icon: "☽", attrs: `data-appt="${a.id}"`, title: a.title,
+        meta: [a.start ? esc(fmtTime(a.start)) : "", c ? esc(c.name) : "", a.location ? esc(a.location) : ""].filter(Boolean).join(" · ") || "appointment" });
+    });
+    expectedEntries(stepDays(today, -31), end).forEach((e) => {
+      const t = e.source;
+      out.push({ date: e.date, kind: "money", icon: "↻", attrs: `data-expected="${t.id}@${e.date}"`, title: t.description,
+        meta: `${t.type === "income" ? "expected in" : "due"} · ${esc(freqLabel(t.frequency))}`, side: amt(t), money: t });
+    });
+    d.transactions.filter((t) => !isRecurring(t.frequency) && t.dueDate && t.dueDate >= today && t.dueDate <= end).forEach((t) => {
+      out.push({ date: t.dueDate, kind: "money", icon: "⏳", attrs: `data-tx="${t.id}"`, title: t.description, meta: "due", side: amt(t), money: t });
+    });
+    d.plans.filter((x) => !x.done && x.date && x.date >= today && x.date <= end && (x.items || []).some((it) => !it.done)).forEach((x) => {
+      const st = planStats(x);
+      out.push({ date: x.date, kind: "money", icon: x.kind === "shopping" ? "⚱" : "☾", attrs: `data-goto="coffers/${esc(x.id)}"`, title: x.name,
+        meta: `${x.kind === "shopping" ? "shopping list" : "occasion"} · ${st.items.length - st.bought} to buy${st.stillNeeded ? ` · ${money(st.stillNeeded)} still to find` : ""}` });
+    });
+    followUpsDue(HORIZON_DAYS - 1).forEach((p) => {
+      out.push({ date: p.followUp, kind: "people", icon: "✉", attrs: `data-goto="codex/${esc(p.id)}"`, title: p.name,
+        meta: ["follow up", p.nextStep ? esc(p.nextStep) : ""].filter(Boolean).join(" · ") });
+    });
+    d.projects.filter((p) => ACTIVE_STATUS.has(p.status)).forEach((p) => (p.milestones || []).filter((m) => !m.done && m.date && m.date <= end).forEach((m) => {
+      out.push({ date: m.date, kind: "work", icon: "◆", attrs: `data-goto="workings/${esc(p.id)}"`, title: m.title, meta: `milestone · ${esc(p.name)}` });
+    }));
+    d.content.filter((c) => c.status !== "posted" && c.date && c.date >= stepDays(today, -7) && c.date <= end).forEach((c) => {
+      out.push({ date: c.date, time: c.time || "", kind: "work", icon: isLive(c) ? "◉" : "❧", attrs: `data-content="${c.id}"`, title: isLive(c) ? `Live · ${c.title}` : c.title,
+        meta: [c.platform, isLive(c) ? "" : c.format, c.time ? fmtTime(c.time) : "", labelOf(CONTENT_STATUS, c.status || "idea").toLowerCase()].filter(Boolean).map(esc).join(" · ") });
+    });
+    return out.sort((a, b) => a.date.localeCompare(b.date) || (a.time || "99").localeCompare(b.time || "99"));
+  }
+
+  function horizonCard(items) {
+    const today = todayStr();
+    const ofKind = items.filter((x) => ui.horizonFilter === "all" || x.kind === ui.horizonFilter);
+    // a week at a glance; the second week is one tap away
+    const weekEnd = stepDays(today, 6);
+    const shown = ui.horizonAll ? ofKind : ofKind.filter((x) => x.date <= weekEnd);
+    const hidden = ofKind.length - shown.length;
+    const groups = [];
+    shown.forEach((x) => {
+      const key = x.date < today ? "past" : x.date;
+      let g = groups.find((y) => y.key === key);
+      if (!g) groups.push((g = { key, items: [] }));
+      g.items.push(x);
+    });
+    const dayHead = (key) => key === "past"
+      ? `<span class="neg">Slipped past</span><small>not yet done</small>`
+      : `<span>${esc(relDay(key) === "today" ? "Today" : relDay(key) === "tomorrow" ? "Tomorrow" : fmtDate(key, { weekday: "long" }))}</span><small>${esc(fmtDate(key, { month: "short", day: "numeric" }))}</small>`;
+    const inRange = ui.horizonAll ? items : items.filter((x) => x.date <= weekEnd);
+    const counts = Object.fromEntries(HORIZON_KINDS.map(([k]) => [k, k === "all" ? inRange.length : inRange.filter((x) => x.kind === k).length]));
+    return `<div class="card horizon">
+      <div class="card-head"><h2>${ui.horizonAll ? "The fortnight ahead" : "The week ahead"}</h2><small>${ui.horizonAll ? `next ${HORIZON_DAYS} days` : "next 7 days"}</small></div>
+      <div class="chips" role="group" aria-label="Show">
+        ${HORIZON_KINDS.map(([k, label]) => `<button class="chip ${ui.horizonFilter === k ? "on" : ""}" data-horizon="${k}" aria-pressed="${ui.horizonFilter === k}">${label}${counts[k] ? ` <span class="n">${counts[k]}</span>` : ""}</button>`).join("")}
+      </div>
+      ${groups.length ? groups.map((g) => `<section class="h-day ${g.key === "past" ? "past" : ""} ${g.key === today ? "today" : ""}">
+          <h3>${dayHead(g.key)}</h3>
+          <ul class="list">${g.items.map((x) => `<li ${x.attrs} tabindex="0" class="h-item ${x.kind}">
+            <span class="h-icon" aria-hidden="true">${x.icon}</span>
+            <div class="grow"><span class="title">${esc(x.title)}</span><span class="meta">${g.key === "past" ? `<span class="neg">${esc(fmtDate(x.date, { month: "short", day: "numeric" }))}</span> · ` : ""}${x.meta}</span></div>
+            ${x.side || ""}</li>`).join("")}</ul>
+        </section>`).join("")
+      : empty("☽", hidden ? "Nothing this week." : ui.horizonFilter === "all" ? "Nothing on the calendar for two weeks. The evenings are yours." : "Nothing of this kind in the next two weeks.")}
+      ${hidden ? `<p class="more-link"><button class="link-btn" data-horizon-all="1">${hidden} more next week →</button></p>`
+        : ui.horizonAll && ofKind.some((x) => x.date > weekEnd) ? `<p class="more-link"><button class="link-btn" data-horizon-all="0">just this week</button></p>` : ""}
+    </div>`;
+  }
+
   views.sanctum = {
     title: "Sanctum",
-    actions: () => `<button class="btn" data-act="add-expense">+ Expense</button><button class="btn" data-act="add-appt">+ Appointment</button>`,
+    actions: () => `<details class="add-menu">
+        <summary class="btn primary" aria-label="Add something">+ Add</summary>
+        <div class="menu" role="menu">
+          <button role="menuitem" data-act="add-expense">✒ Expense</button>
+          <button role="menuitem" data-act="add-income">✦ Income</button>
+          <button role="menuitem" data-act="add-task">☑ Task</button>
+          <button role="menuitem" data-act="add-appt">☽ Appointment</button>
+          <button role="menuitem" data-act="add-content-day">❧ Post</button>
+          <button role="menuitem" data-act="add-idea">✧ Idea</button>
+        </div>
+      </details>`,
     render() {
       const d = D();
       const key = monthKey(new Date());
       const t = monthTotals(key);
       const today = todayStr();
-      const upcoming = d.appointments.filter((a) => a.date >= today).sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start)).slice(0, 6);
-      const recent = d.transactions.slice().sort((a, b) => b.date.localeCompare(a.date) || (b.createdAt || "").localeCompare(a.createdAt || "")).slice(0, 6);
       const left = t.budget - Object.entries(t.spentBy).filter(([k]) => k && catById(k)).reduce((s, [, v]) => s + v, 0);
       const segs = Object.entries(t.spentBy).map(([id, v]) => {
         const c = catById(id);
         return { label: c ? c.name : "Uncategorized", color: c ? c.color : "#6f6774", value: v };
       }).sort((a, b) => b.value - a.value);
       const q = QUOTES[Math.floor(Date.now() / 864e5) % QUOTES.length];
-      const horizon = stepDays(today, 14);
-      const dueSoon = [
-        ...d.transactions.filter((t) => !isRecurring(t.frequency) && t.dueDate && t.dueDate >= today && t.dueDate <= horizon).map((t) => ({ t, date: t.dueDate })),
-        ...expectedEntries(stepDays(today, -31), horizon).map((e) => ({ t: e.source, date: e.date, expected: true })),
-      ].sort((a, b) => a.date.localeCompare(b.date)).slice(0, 8);
-      const isEmpty = !d.transactions.length && !d.appointments.length && !d.clients.length;
+      const card = Tarot.cardOfDay(today), suit = Tarot.SUITS[card.suit];
+      const items = horizonItems();
+      // what's owed and owing in the fortnight, counting anything already slipped past
+      const dueMoney = items.filter((x) => x.money);
+      const out = dueMoney.filter((x) => x.money.type === "expense").reduce((s, x) => s + x.money.amount, 0);
+      const inn = dueMoney.filter((x) => x.money.type === "income").reduce((s, x) => s + x.money.amount, 0);
+      const late = dueMoney.filter((x) => x.date < today).length;
+      const isEmpty = !d.transactions.length && !d.appointments.length && !d.clients.length && !d.tasks.length;
       const name = d.settings.ownerName ? `, ${esc(d.settings.ownerName)}` : "";
+      const pressing = pressingTasks();
+      const nextUp = pressing.length ? [] : openTasks().sort(bySuggested).slice(0, 3);
 
       return `
         ${isEmpty ? `
         <div class="card" style="margin-bottom:18px">
           <div class="card-head"><h2>Welcome to the grimoire${name}</h2></div>
-          <p class="quote" style="margin-bottom:14px">These pages are blank and waiting. Record an expense, add a client or book an appointment, or summon some sample pages to see how it all fits together.</p>
+          <p class="quote" style="margin-bottom:14px">These pages are blank and waiting. Record an expense, add a task or book an appointment, or summon some sample pages to see how it all fits together.</p>
           <div class="toolbar" style="margin:0">
             <button class="btn primary" data-act="seed">Summon sample data</button>
             <button class="btn" data-act="add-client">+ First client</button>
           </div>
         </div>` : ""}
 
-        <div class="grid cols-4 stats">
-          <div class="card stat"><div class="label">Income · ${MONTHS[new Date().getMonth()]}</div><div class="value pos">${money(t.income)}</div><div class="sub">${t.txs.filter((x) => x.type === "income").length} payments received</div></div>
-          <div class="card stat"><div class="label">Spent</div><div class="value">${money(t.expense)}</div><div class="sub">${t.txs.filter((x) => x.type === "expense").length} entries</div></div>
-          <div class="card stat"><div class="label">Net</div><div class="value ${t.net >= 0 ? "pos" : "neg"}">${money(t.net)}</div><div class="sub">${t.net >= 0 ? "the coffers grow" : "the coffers thin"}</div></div>
-          <div class="card stat"><div class="label">Budget remaining</div><div class="value ${left >= 0 ? "gold" : "neg"}">${money(left)}</div><div class="sub">of ${money(t.budget)} allotted</div></div>
+        <a class="omen card" href="#agenda" title="Open the draw in the Agenda">
+          <span class="omen-card ${esc(card.suit)}" aria-hidden="true">${Tarot.icon(card.suit)}</span>
+          <span class="omen-text"><span class="omen-label">Card of the day</span><b>${esc(card.name)}</b><span class="omen-meaning">${esc(card.meaning)} <i>${esc(suit.name)}: ${esc(suit.action.charAt(0).toLowerCase() + suit.action.slice(1))}.</i></span></span>
+          <span class="omen-quote">“${esc(q[0])}”<cite>— ${esc(q[1])}</cite></span>
+        </a>
+
+        <div class="grid cols-3 stats trio-stats">
+          <div class="card stat"><div class="label">Net · ${MONTHS[new Date().getMonth()]}</div><div class="value ${t.net >= 0 ? "pos" : "neg"}">${money(t.net)}</div><div class="sub">${money(t.income)} in · ${money(t.expense)} out</div></div>
+          <div class="card stat"><div class="label">Budget left</div><div class="value ${left >= 0 ? "gold" : "neg"}">${money(left)}</div><div class="sub">of ${money(t.budget)} allotted</div></div>
+          <div class="card stat"><div class="label">Coming due</div><div class="value">${money(out)}</div><div class="sub">${late ? `<span class="neg">${late} past due</span> · ` : ""}${inn ? `${money(inn)} expected in · ` : ""}next ${HORIZON_DAYS} days</div></div>
         </div>
 
-        <div class="grid split" style="margin-top:18px">
-          <div class="card">
-            <div class="card-head"><h2>On the horizon</h2><a href="#almanac">full almanac →</a></div>
-            ${upcoming.length ? `<ul class="list">${upcoming.map((a) => {
-              const c = clientById(a.clientId);
-              return `<li data-appt="${a.id}" style="cursor:pointer">${dateChip(a.date)}<div class="grow"><span class="title">${esc(a.title)}</span><span class="meta">${relDay(a.date)}${a.start ? ` · ${fmtTime(a.start)}` : ""}${c ? ` · ${esc(c.name)}` : ""}${a.location ? ` · ${esc(a.location)}` : ""}</span></div></li>`;
-            }).join("")}</ul>` : empty("☽", "Nothing scheduled. The evenings are yours.")}
-          </div>
-          <div class="card">
-            <div class="card-head"><h2>Where it went</h2><a href="#coffers">coffers →</a></div>
-            ${segs.length ? `<div class="ring-wrap">${ring(segs)}<ul class="legend">${segs.slice(0, 6).map((s) => `<li><span class="sw" style="background:${esc(s.color)}"></span>${esc(s.label)}<span class="v">${money(s.value)}</span></li>`).join("")}</ul></div>` : empty("⚱", "No spending recorded this month.")}
-          </div>
-        </div>
-
-        <div class="grid split" style="margin-top:18px">
-          <div class="card">
-            <div class="card-head"><h2>Lately in the ledger</h2><a href="#ledger">ledger →</a></div>
-            ${recent.length ? `<ul class="list">${recent.map((x) => txLi(x)).join("")}</ul>` : empty("✒", "The ledger is empty.")}
-          </div>
-          <div class="grid" style="align-content:start">
-            <div class="card">
-              <div class="card-head"><h2>Today's agenda</h2><a href="#agenda">agenda →</a></div>
-              ${(() => {
-                const list = pressingTasks();
-                return list.length
-                  ? `<ul class="list tasks">${list.slice(0, 6).map((t) => taskLi(t)).join("")}</ul>${list.length > 6 ? `<p class="more-link"><a href="#agenda">${list.length - 6} more</a></p>` : ""}`
-                  : empty("☑", D().tasks.some((t) => !t.done) ? "Nothing due today." : "No tasks yet. Add one in the Agenda.");
-              })()}
+        <div class="grid sanctum-main">
+          ${horizonCard(items)}
+            <div class="card s-tasks">
+              <div class="card-head"><h2>Today's tasks</h2><a href="#agenda">agenda →</a></div>
+              ${pressing.length
+                ? `<ul class="list tasks">${pressing.slice(0, 6).map((x) => taskLi(x)).join("")}</ul>${pressing.length > 6 ? `<p class="more-link"><a href="#agenda">${pressing.length - 6} more</a></p>` : ""}`
+                : nextUp.length
+                  ? `<p class="sub-h">Nothing pressing. Next up:</p><ul class="list tasks">${nextUp.map((x) => taskLi(x)).join("")}</ul>`
+                  : empty("☑", "No tasks waiting. Add one with + Add.")}
             </div>
-            ${(() => {
-              const soon = D().plans.filter((x) => !x.done && x.date && x.date <= stepDays(today, 14) && (x.items || []).some((it) => !it.done)).sort((a, b) => a.date.localeCompare(b.date));
-              if (!soon.length) return "";
-              return `<div class="card">
-                <div class="card-head"><h2>Plans ahead</h2><a href="#coffers">coffers →</a></div>
-                <ul class="list">${soon.slice(0, 4).map((x) => { const st = planStats(x); return `<li data-goto="coffers/${esc(x.id)}" style="cursor:pointer">${dateChip(x.date)}<div class="grow"><span class="title">${x.kind === "shopping" ? "⚱" : "☾"} ${esc(x.name)}</span><span class="meta">${st.stillNeeded ? `${money(st.stillNeeded)} still to find` : "covered"} · ${st.items.length - st.bought} to buy · ${esc(relDay(x.date))}</span></div></li>`; }).join("")}</ul>
-              </div>`;
-            })()}
-            ${(() => {
-              const due = followUpsDue(3);
-              if (!due.length) return "";
-              return `<div class="card">
-                <div class="card-head"><h2>Follow-ups</h2><a href="#codex">codex →</a></div>
-                <ul class="list">${due.slice(0, 5).map((p) => `<li data-goto="codex/${esc(p.id)}" style="cursor:pointer">${dateChip(p.followUp)}<div class="grow"><span class="title">${esc(p.name)}</span><span class="meta">${p.nextStep ? `${esc(p.nextStep)} · ` : ""}${followLabel(p.followUp)}</span></div></li>`).join("")}</ul>
-              </div>`;
-            })()}
-            ${(() => {
-              const soon = stepDays(today, 14);
-              const items = [
-                ...D().projects.filter((p) => ACTIVE_STATUS.has(p.status)).flatMap((p) => (p.milestones || []).filter((m) => !m.done && m.date && m.date <= soon).map((m) => ({ date: m.date, html: `<li data-goto="workings/${esc(p.id)}" style="cursor:pointer">${dateChip(m.date)}<div class="grow"><span class="title">◆ ${esc(m.title)}</span><span class="meta">${m.date < today ? `<span class="neg">past its date</span> · ` : ""}milestone · ${esc(p.name)}</span></div></li>` }))),
-                ...D().content.filter((c) => c.status !== "posted" && c.date && c.date <= soon && c.date >= stepDays(today, -7)).map((c) => ({ date: c.date, html: contentLi(c) })),
-              ].sort((a, b) => a.date.localeCompare(b.date)).slice(0, 6);
-              if (!items.length && !D().projects.length) return "";
-              return `<div class="card">
-                <div class="card-head"><h2>Workings</h2><a href="#workings">workings →</a></div>
-                ${items.length ? `<ul class="list">${items.map((x) => x.html).join("")}</ul>` : empty("⚗", "No milestones or posts in the next two weeks.")}
-              </div>`;
-            })()}
-            <div class="card">
-              <div class="card-head"><h2>Due &amp; expected</h2><small>next 14 days</small></div>
-              ${dueSoon.length ? `<ul class="list">${dueSoon.map((x) => `<li ${x.expected ? `data-expected="${x.t.id}@${x.date}"` : `data-tx="${x.t.id}"`} style="cursor:pointer">${dateChip(x.date)}
-                <div class="grow"><span class="title">${x.expected ? "↻ " : ""}${esc(x.t.description)}</span><span class="meta">${x.date < today ? `<span class="neg">past due</span> · ` : ""}${esc([x.expected ? "" : dueLabel(x.date), relDay(x.date), isRecurring(x.t.frequency) ? freqLabel(x.t.frequency) : ""].filter(Boolean).join(" · "))}</span></div>
-                <span class="${x.t.type === "income" ? "pos" : ""}" style="font-variant-numeric:tabular-nums">${x.t.type === "income" ? "+" : "−"}${money(x.t.amount)}</span></li>`).join("")}</ul>` : empty("⏳", "Nothing due in the next two weeks.")}
+            <div class="card s-ring">
+              <div class="card-head"><h2>Where it went</h2><a href="#ledger">ledger →</a></div>
+              ${segs.length ? `<div class="ring-wrap">${ring(segs)}<ul class="legend">${segs.slice(0, 6).map((s) => `<li><span class="sw" style="background:${esc(s.color)}"></span>${esc(s.label)}<span class="v">${money(s.value)}</span></li>`).join("")}</ul></div>` : empty("⚱", "No spending recorded this month.")}
             </div>
-            <div class="card">
-              <div class="card-head"><h2>The codex</h2><a href="#codex">clients →</a></div>
-              <div class="grid trio" style="gap:8px;text-align:center">
-                ${["lead", "active", "past"].map((s) => `<div><div class="stat"><div class="value">${d.clients.filter((c) => c.status === s).length}</div><div class="label">${s}</div></div></div>`).join("")}
-              </div>
-            </div>
-            <div class="card"><p class="quote">“${esc(q[0])}”<cite>— ${esc(q[1])}</cite></p></div>
-          </div>
         </div>`;
     },
     bind(root) {
-      $$("[data-appt]", root).forEach((li) => li.addEventListener("click", () => editAppointment(D().appointments.find((a) => a.id === li.dataset.appt))));
-      $$("[data-tx]", root).forEach((li) => li.addEventListener("click", () => editTransaction(D().transactions.find((t) => t.id === li.dataset.tx))));
-      $$("[data-goto]", root).forEach((li) => li.addEventListener("click", () => (location.hash = li.dataset.goto)));
-      $$("[data-expected]", root).forEach((li) => li.addEventListener("click", () => {
-        const [id, date] = li.dataset.expected.split("@");
-        logExpected({ source: D().transactions.find((t) => t.id === id), date, skipped: li.dataset.skipped === "1" });
-      }));
+      const open = (el) => {
+        if (el.dataset.appt) return editAppointment(D().appointments.find((a) => a.id === el.dataset.appt));
+        if (el.dataset.tx) return editTransaction(D().transactions.find((t) => t.id === el.dataset.tx));
+        if (el.dataset.content) return editContent(D().content.find((c) => c.id === el.dataset.content));
+        if (el.dataset.goto) return (location.hash = el.dataset.goto);
+        if (el.dataset.expected) {
+          const [id, date] = el.dataset.expected.split("@");
+          logExpected({ source: D().transactions.find((t) => t.id === id), date });
+        }
+      };
+      $$(".h-item", root).forEach((li) => {
+        li.addEventListener("click", (e) => { if (!e.target.closest("a")) open(li); });
+        li.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(li); } });
+      });
+      $$("[data-horizon]", root).forEach((b) => b.addEventListener("click", () => { ui.horizonFilter = b.dataset.horizon; render(); }));
+      $$("[data-horizon-all]", root).forEach((b) => b.addEventListener("click", () => { ui.horizonAll = b.dataset.horizonAll === "1"; render(); }));
     },
   };
 
@@ -3564,6 +3610,8 @@
     }),
   };
   document.addEventListener("click", (e) => {
+    // the + Add menu closes on any choice, or a click elsewhere
+    $$("details.add-menu[open]").forEach((m) => { if (!m.contains(e.target) || e.target.closest("[data-act]")) m.open = false; });
     const b = e.target.closest("[data-act]");
     if (b && actions[b.dataset.act]) return actions[b.dataset.act](b);
     // tasks behave the same wherever they're listed
@@ -3589,6 +3637,7 @@
     if (task && !e.target.closest("a")) editTask(D().tasks.find((t) => t.id === task.dataset.task));
   });
   document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") $$("details.add-menu[open]").forEach((m) => { m.open = false; $("summary", m).focus(); });
     const input = e.target.closest && e.target.closest("[data-add-step-inline]");
     if (!input || e.key !== "Enter") return;
     e.preventDefault();

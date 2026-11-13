@@ -1011,3 +1011,70 @@ tr.projected.skipped td { opacity: .45; text-decoration: line-through; text-deco
 tr.projected.skipped td small, tr.projected.skipped td i { text-decoration: none; }
 .link-btn { all: unset; cursor: pointer; color: var(--gold); text-decoration: underline; text-underline-offset: 2px; font-style: italic; }
 .link-btn:hover, .link-btn:focus-visible { color: var(--bone); }
+
+/* ── the overview: card of the day, three numbers, the fortnight ahead ── */
+.omen { display: grid; grid-template-columns: auto minmax(0, 1.4fr) minmax(0, 1fr); gap: 18px; align-items: center; margin-bottom: 18px; color: inherit; text-decoration: none; padding: 14px 20px; }
+.omen:hover, .omen:focus-visible { border-color: var(--gold-dim); outline: none; }
+.omen-card { --accent: var(--gold); width: 46px; height: 70px; border: 1px solid var(--accent); border-radius: 5px; display: grid; place-items: center; color: var(--accent); background: var(--ink); }
+.omen-card svg { width: 24px; height: 24px; }
+.omen-card.swords { --accent: var(--rose); }
+.omen-card.wands { --accent: #d9a47a; }
+.omen-card.cups { --accent: #7f98a8; }
+.omen-text { display: flex; flex-direction: column; min-width: 0; }
+.omen-label { font-family: var(--font-sc); font-size: 13px; letter-spacing: .1em; color: var(--ash); }
+.omen-text b { font-family: var(--font-sc); font-weight: normal; font-size: 20px; color: var(--parchment); letter-spacing: .04em; }
+.omen-meaning { font-size: 16px; color: var(--ash); }
+.omen-meaning i { color: var(--parchment); }
+.omen-quote { font-style: italic; color: var(--parchment); font-size: 16px; border-left: 1px solid var(--line); padding-left: 18px; }
+.omen-quote cite { display: block; margin-top: 4px; font-family: var(--font-sc); font-style: normal; font-size: 13px; color: var(--ash); letter-spacing: .06em; }
+.trio-stats { margin-bottom: 18px; }
+.sanctum-main { align-items: start; grid-template-columns: minmax(0, 1fr); }
+.sanctum-main .s-tasks { order: -1; }
+@media (min-width: 1200px) {
+  .sanctum-main { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: auto 1fr; grid-template-areas: "horizon tasks" "horizon ring"; }
+  .sanctum-main .horizon { grid-area: horizon; }
+  .sanctum-main .s-tasks { grid-area: tasks; }
+  .sanctum-main .s-ring { grid-area: ring; }
+}
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: -2px 0 6px; }
+.chip { font: inherit; font-family: var(--font-sc); font-size: 14px; letter-spacing: .05em; color: var(--ash); background: transparent; border: 1px solid var(--line); border-radius: 999px; padding: 3px 12px; cursor: pointer; }
+.chip .n { color: var(--smoke); font-family: var(--font-body); }
+.chip.on { color: var(--gold); border-color: var(--gold-dim); background: var(--vellum-3); }
+.chip:focus-visible { outline: none; border-color: var(--gold); box-shadow: 0 0 0 3px rgba(195, 165, 104, .18); }
+
+.h-day h3 { display: flex; align-items: baseline; gap: 10px; margin: 14px 0 0; padding-bottom: 4px; border-bottom: 1px solid var(--line); font-family: var(--font-sc); font-weight: normal; font-size: 17px; letter-spacing: .06em; color: var(--parchment); }
+.h-day h3 small { color: var(--ash); font-size: 14px; }
+.h-day.today h3 > span:first-child { color: var(--gold); }
+.h-item { cursor: pointer; }
+.h-item:hover .title, .h-item:focus-visible .title { color: var(--gold); }
+.h-item:focus-visible { outline: none; background: rgba(195, 165, 104, .06); }
+.h-icon { flex: none; width: 26px; text-align: center; font-size: 18px; color: var(--gold-dim); }
+.h-item.money .h-icon { color: var(--sage); }
+.h-item.people .h-icon { color: var(--plum); }
+.h-item.work .h-icon { color: var(--gold); }
+.h-amt { flex: none; font-variant-numeric: tabular-nums; }
+
+/* one "+ Add" for everything */
+.add-menu { position: relative; }
+.add-menu > summary { list-style: none; cursor: pointer; }
+.add-menu > summary::-webkit-details-marker { display: none; }
+.add-menu .menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; min-width: 190px; display: flex; flex-direction: column; padding: 6px; background: var(--vellum-2); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+.add-menu .menu button { font: inherit; text-align: left; background: none; border: 0; color: var(--bone); padding: 8px 12px; border-radius: var(--radius); cursor: pointer; }
+.add-menu .menu button:hover, .add-menu .menu button:focus-visible { background: var(--vellum-3); color: var(--gold); outline: none; }
+
+@media (max-width: 860px) {
+  .omen { grid-template-columns: auto minmax(0, 1fr); }
+  .omen-quote { grid-column: 1 / -1; border-left: 0; padding-left: 0; border-top: 1px dashed var(--line-soft); padding-top: 10px; }
+}
+@media (max-width: 600px) {
+  .trio-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .trio-stats > :first-child { grid-column: 1 / -1; }
+  .omen-quote { display: none; }
+  /* on phones, + Add floats in the corner, always in reach */
+  .add-menu { position: fixed; right: 16px; bottom: calc(18px + env(safe-area-inset-bottom)); z-index: 35; }
+  .add-menu > summary { width: 58px; height: 58px; padding: 0; border-radius: 50%; display: grid; place-items: center; font-size: 0; box-shadow: 0 10px 24px rgba(0, 0, 0, .6); }
+  .add-menu > summary::before { content: "+"; font-size: 30px; line-height: 1; }
+  .add-menu .menu { top: auto; bottom: calc(100% + 10px); }
+  .main { padding-bottom: 96px; }
+}
