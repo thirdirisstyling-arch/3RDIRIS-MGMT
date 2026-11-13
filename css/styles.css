@@ -1072,9 +1072,51 @@ tr.projected.skipped td small, tr.projected.skipped td i { text-decoration: none
   .trio-stats > :first-child { grid-column: 1 / -1; }
   .omen-quote { display: none; }
   /* on phones, + Add floats in the corner, always in reach */
-  .add-menu { position: fixed; right: 16px; bottom: calc(18px + env(safe-area-inset-bottom)); z-index: 35; }
+  .add-menu { position: fixed; right: 16px; bottom: calc(84px + env(safe-area-inset-bottom)); z-index: 35; }
   .add-menu > summary { width: 58px; height: 58px; padding: 0; border-radius: 50%; display: grid; place-items: center; font-size: 0; box-shadow: 0 10px 24px rgba(0, 0, 0, .6); }
   .add-menu > summary::before { content: "+"; font-size: 30px; line-height: 1; }
   .add-menu .menu { top: auto; bottom: calc(100% + 10px); }
   .main { padding-bottom: 96px; }
+}
+
+/* ── sections: the tab strip under the title, Settings, and the phone tab bar ── */
+.section-tabs { display: flex; gap: 4px; margin: -12px 0 20px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
+.section-tabs::-webkit-scrollbar { display: none; }
+.section-tabs button {
+  font: inherit; font-family: var(--font-sc); font-size: 17px; letter-spacing: .05em; white-space: nowrap;
+  background: none; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  color: var(--ash); padding: 8px 14px; cursor: pointer;
+}
+.section-tabs button:hover { color: var(--bone); }
+.section-tabs button.on { color: var(--gold); border-bottom-color: var(--gold); }
+.section-tabs button:focus-visible { outline: none; color: var(--gold); background: rgba(195, 165, 104, .08); }
+.section-tabs .n { font-family: var(--font-body); font-size: 14px; color: var(--smoke); }
+.section-tabs .n.late { color: var(--rose); }
+.nav-badge.late { background: var(--rose); }
+
+.settings-link { display: flex; align-items: center; gap: 10px; margin: 10px 0 0; padding: 8px 12px; color: var(--ash); text-decoration: none; font-family: var(--font-sc); letter-spacing: .04em; font-size: 16px; border: 1px solid transparent; border-radius: var(--radius); }
+.settings-link .glyph { width: 26px; text-align: center; color: var(--gold-dim); }
+.settings-link:hover, .settings-link.active { color: var(--bone); background: var(--vellum-2); }
+.settings-link.active { border-color: var(--line); }
+
+.tabbar { display: none; }
+@media (max-width: 860px) {
+  .tabbar {
+    display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); position: fixed; left: 0; right: 0; bottom: 0; z-index: 36;
+    background: rgba(14, 12, 16, .96); border-top: 1px solid var(--line); padding: 4px 4px calc(4px + env(safe-area-inset-bottom));
+    backdrop-filter: blur(6px);
+  }
+  .tabbar a { position: relative; display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 6px 0 4px; color: var(--ash); text-decoration: none; border-radius: var(--radius); min-height: 48px; }
+  .tabbar .glyph { font-size: 21px; line-height: 1.1; color: var(--gold-dim); }
+  .tabbar .lbl { font-family: var(--font-sc); font-size: 12px; letter-spacing: .05em; }
+  .tabbar a.active { color: var(--gold); }
+  .tabbar a.active .glyph { color: var(--gold); text-shadow: 0 0 10px rgba(195, 165, 104, .5); }
+  .tabbar .nav-badge { position: absolute; top: 2px; left: calc(50% + 6px); right: auto; transform: none; min-width: 18px; height: 18px; font-size: 12px; line-height: 18px; padding: 0 4px; }
+  .main { padding-bottom: 90px; }
+  .toast { bottom: calc(76px + env(safe-area-inset-bottom)); }
+  .section-tabs { margin-top: -16px; }
+  .section-tabs button { padding: 8px 10px; font-size: 16px; }
+}
+@media (max-width: 600px) {
+  .main { padding-bottom: 160px; }
 }

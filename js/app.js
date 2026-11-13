@@ -1722,7 +1722,7 @@
         const p = planById(pid);
         return p ? planPage(p) : `<div class="card">${empty("⚱", "That plan isn't here any more. <a href=\"#coffers\">Back to the coffers</a>.")}</div>`;
       }
-      const tabs = `<div class="toolbar"><div class="segmented" data-ui="coffersTab">${[["budget", "Monthly budget"], ["plans", "Plans"]].map(([v, l]) => `<button class="${ui.coffersTab === v ? "on" : ""}" data-value="${v}">${l}${v === "plans" && D().plans.filter((x) => !x.done).length ? ` (${D().plans.filter((x) => !x.done).length})` : ""}</button>`).join("")}</div></div>`;
+      const tabs = ""; // Budget and Plans are tabs of the Coffers section
       if (ui.coffersTab === "plans") {
         const active = D().plans.filter((x) => !x.done).sort((a, b) => (a.date || "9999").localeCompare(b.date || "9999"));
         const finished = D().plans.filter((x) => x.done);
@@ -3292,7 +3292,7 @@
         const p = projectById(id);
         return p ? projectPage(p) : `<div class="card">${empty("⚗", "That working isn't here any more. <a href=\"#workings\">See all workings</a>.")}</div>`;
       }
-      const tabs = `<div class="toolbar"><div class="segmented" data-ui="workTab">${[["projects", "Projects"], ["timeline", "Timeline"], ["content", "Content calendar"], ["metrics", "Metrics"]].map(([v, l]) => `<button class="${ui.workTab === v ? "on" : ""}" data-value="${v}">${l}</button>`).join("")}</div></div>`;
+      const tabs = ""; // Projects, Timeline, Content and Metrics are tabs of the Workings section
       if (ui.workTab === "timeline") return tabs + timelineView();
       if (ui.workTab === "content") return tabs + contentView();
       if (ui.workTab === "metrics") return tabs + metricsView();
@@ -3441,7 +3441,7 @@
   }
 
   views.archive = {
-    title: "Archive",
+    title: "Settings",
     actions: () => "",
     render() {
       const s = D().settings;
@@ -3648,7 +3648,69 @@
     if (again) again.focus();
   });
 
-  /* ── chrome: router, sidebar, moon ─────────── */
+  /* ── chrome: sections, router, sidebar, moon ─────────── */
+  // five sections; the ones holding several pages get a tab strip. A tab is a view, optionally with a ui setting.
+  const SECTIONS = [
+    { key: "sanctum", label: "Sanctum", glyph: "☾", small: "overview", tabs: [{ view: "sanctum" }] },
+    { key: "coffers", label: "Coffers", glyph: "⚱", small: "money &amp; budget", tabs: [
+      { view: "ledger", label: "Ledger" },
+      { view: "coffers", set: ["coffersTab", "budget"], label: "Budget" },
+      { view: "coffers", set: ["coffersTab", "plans"], label: "Plans" },
+    ] },
+    { key: "agenda", label: "Agenda", glyph: "☑", small: "tasks &amp; calendar", tabs: [
+      { view: "agenda", label: "Tasks" },
+      { view: "almanac", label: "Calendar" },
+    ] },
+    { key: "workings", label: "Workings", glyph: "⚗", small: "projects &amp; content", tabs: [
+      { view: "workings", set: ["workTab", "projects"], label: "Projects" },
+      { view: "workings", set: ["workTab", "timeline"], label: "Timeline" },
+      { view: "workings", set: ["workTab", "content"], label: "Content" },
+      { view: "workings", set: ["workTab", "metrics"], label: "Metrics" },
+      { view: "cabinet", label: "Cabinet" },
+    ] },
+    { key: "codex", label: "Codex", glyph: "❦", small: "clients &amp; partners", tabs: [{ view: "codex" }] },
+  ];
+  const sectionOf = (view) => SECTIONS.find((sec) => sec.tabs.some((t) => t.view === view));
+  const tabIsOn = (t, view) => t.view === view && (!t.set || ui[t.set[0]] === t.set[1]);
+  // each section opens where it was last left
+  const lastView = (sec) => {
+    const v = (prefs.lastView || {})[sec.key];
+    return sec.tabs.some((t) => t.view === v) ? v : sec.tabs[0].view;
+  };
+  // bills that came due and haven't been recorded or skipped
+  const pastDueBills = () => expectedEntries(stepDays(todayStr(), -31), stepDays(todayStr(), -1)).length;
+
+  function sectionTabs(sec, view) {
+    if (!sec || sec.tabs.length < 2 || routeParam()) return "";
+    const tasks = pressingTasks().length, plans = D().plans.filter((x) => !x.done).length, late = pastDueBills();
+    const count = (t) => (t.view === "agenda" ? tasks : t.view === "ledger" ? late : t.set && t.set[1] === "plans" ? plans : 0);
+    return `<nav class="section-tabs" aria-label="${esc(sec.label.replace(/&amp;/g, "&"))}">${sec.tabs.map((t, i) => {
+      const on = tabIsOn(t, view), n = count(t);
+      return `<button class="${on ? "on" : ""}" data-stab="${sec.key}:${i}" ${on ? 'aria-current="page"' : ""}>${esc(t.label)}${n ? ` <span class="n ${t.view === "ledger" ? "late" : ""}">${n}</span>` : ""}</button>`;
+    }).join("")}</nav>`;
+  }
+
+  function renderNav(view) {
+    const cur = sectionOf(view);
+    const badges = { agenda: [pressingTasks().length, "due or overdue"], coffers: [pastDueBills(), "past due"] };
+    const badge = (sec) => {
+      const [n, what] = badges[sec.key] || [0, ""];
+      return n ? `<span class="nav-badge ${sec.key === "coffers" ? "late" : ""}" title="${n} ${what}">${n}</span>` : "";
+    };
+    $("#nav").innerHTML = SECTIONS.map((sec) => `<a href="#${lastView(sec)}" data-section="${sec.key}" class="${sec === cur ? "active" : ""}" ${sec === cur ? 'aria-current="page"' : ""}><span class="glyph">${sec.glyph}</span><span><b>${sec.label}</b><small>${sec.small}</small></span>${badge(sec)}</a>`).join("");
+    $("#tabbar").innerHTML = SECTIONS.map((sec) => `<a href="#${lastView(sec)}" data-section="${sec.key}" class="${sec === cur ? "active" : ""}" ${sec === cur ? 'aria-current="page"' : ""}><span class="glyph">${sec.glyph}</span><span class="lbl">${sec.label}</span>${badge(sec)}</a>`).join("");
+    $$(".settings-link").forEach((a) => a.classList.toggle("active", view === "archive"));
+  }
+
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-stab]");
+    if (!b) return;
+    const [key, i] = b.dataset.stab.split(":");
+    const t = SECTIONS.find((sec) => sec.key === key).tabs[Number(i)];
+    if (t.set) { ui[t.set[0]] = prefs[t.set[0]] = t.set[1]; savePrefs(); }
+    if (currentView() === t.view && !routeParam()) render();
+    else location.hash = t.view;
+  });
   function currentView() {
     const v = location.hash.replace("#", "").split("/")[0];
     return views[v] ? v : "sanctum";
@@ -3659,19 +3721,19 @@
   function render() {
     const name = currentView();
     const v = views[name];
-    const title = typeof v.title === "function" ? v.title() : v.title;
+    const sec = sectionOf(name);
+    if (sec) { (prefs.lastView ||= {})[sec.key] = name; savePrefs(); }
+    // a section's pages share its name; a single project, plan or partner keeps its own
+    const own = typeof v.title === "function" ? v.title() : v.title;
+    const title = sec && !routeParam() ? sec.label : own;
     $("#viewTitle").textContent = title;
     document.title = `${title} · 3rd Iris`;
     $("#topbarActions").innerHTML = v.actions();
     const root = $("#view");
-    root.innerHTML = v.render();
+    root.innerHTML = sectionTabs(sec, name) + v.render();
     v.bind && v.bind(root);
     hydrateImages(root);
-    $$(".nav a").forEach((a) => a.classList.toggle("active", a.dataset.view === name));
-    const due = pressingTasks().length, badge = $("#agendaBadge");
-    badge.textContent = due;
-    badge.hidden = !due;
-    badge.title = `${due} task${due === 1 ? "" : "s"} due or overdue`;
+    renderNav(name);
   }
 
   function renderChrome() {
