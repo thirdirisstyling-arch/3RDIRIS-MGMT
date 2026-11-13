@@ -28,6 +28,10 @@ python3 -m http.server 8000   # then visit http://localhost:8000
 
 Data is saved in the browser's `localStorage`. Use **Settings → Download backup** to keep a copy.
 
+### Adding a plan from a link
+
+A link of the form `…/3RDIRIS-MGMT/#add/<code>` opens the app with a ready-made plan of posts and tasks (for example, one written in a chat) and asks before adding anything. Things already in the calendar or on the agenda are left out, so opening a link twice does no harm. The code is base64url-encoded JSON, `{"t": title, "p": posts, "k": tasks}`, where posts and tasks are CSV in the same columns the importers read.
+
 ### Syncing between devices
 
 **Settings → Sync across devices** keeps every device in step through a secret gist on your GitHub account:

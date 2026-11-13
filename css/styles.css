@@ -180,7 +180,7 @@ input[type="color"] { padding: 2px; height: 40px; }
 .segmented button.on { background: var(--vellum-3); color: var(--gold); }
 
 /* ── cards ───────────────────────────────── */
-.grid { display: grid; gap: 18px; }
+.grid { display: grid; gap: 18px; grid-template-columns: minmax(0, 1fr); } /* one column unless a layout says otherwise; long titles truncate instead of stretching it */
 .grid.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .grid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -1120,3 +1120,12 @@ tr.projected.skipped td small, tr.projected.skipped td i { text-decoration: none
 @media (max-width: 600px) {
   .main { padding-bottom: 160px; }
 }
+
+/* a plan arriving by link */
+.add-list { list-style: none; margin: 4px 0 8px; padding: 0; }
+.add-list li { display: flex; gap: 12px; align-items: baseline; padding: 6px 0; border-bottom: 1px dashed var(--line-soft); }
+.add-list li:last-child { border-bottom: 0; }
+.add-list .when { flex: none; width: 128px; color: var(--ash); font-style: italic; font-size: 15px; }
+.add-list .what { flex: 1; min-width: 0; }
+.add-list li.have { opacity: .55; }
+@media (max-width: 600px) { .add-list li { flex-wrap: wrap; gap: 0 10px; } .add-list .when { width: auto; } .add-list .what { flex-basis: 100%; } }

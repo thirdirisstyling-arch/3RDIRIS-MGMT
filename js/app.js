@@ -3648,6 +3648,65 @@
     if (again) again.focus();
   });
 
+  /* ── add from a link ─────────────────────────
+     #add/<payload> opens the app with a ready-made plan to add, e.g. posts and tasks written in a chat.
+     The payload is base64url-encoded JSON: { t: title, p: posts as CSV, k: tasks as CSV }, the same
+     columns the importers read. Nothing is added until it's confirmed, and anything already there is left out. */
+  function decodeAddLink(hash) {
+    const raw = hash.replace(/^#add\//, "").replace(/-/g, "+").replace(/_/g, "/");
+    const bin = atob(raw + "=".repeat((4 - (raw.length % 4)) % 4));
+    const json = new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
+    const d = JSON.parse(json);
+    return { title: String(d.t || "A plan"), posts: String(d.p || ""), tasks: String(d.k || "") };
+  }
+
+  function checkAddLink() {
+    if (!location.hash.startsWith("#add/")) return false;
+    let plan;
+    try { plan = decodeAddLink(location.hash); } catch { plan = null; }
+    history.replaceState(null, "", location.pathname + location.search + "#sanctum");
+    if (!plan) { toast("That link couldn't be read. It may have been cut short when it was copied."); return true; }
+    const today = todayStr();
+    const postKey = (c) => `${c.date}|${(c.title || "").trim().toLowerCase()}`;
+    const havePosts = new Set(D().content.map(postKey));
+    const haveTasks = new Set(D().tasks.filter((t) => !t.done).map((t) => t.title.trim().toLowerCase()));
+    const posts = Importer.parsePosts(plan.posts, today).filter((r) => r.ok);
+    const tasks = Importer.parseTasks(plan.tasks, today).filter((r) => r.ok);
+    posts.forEach((r) => (r.have = havePosts.has(postKey(r))));
+    tasks.forEach((r) => (r.have = haveTasks.has(r.title.toLowerCase())));
+    const newPosts = posts.filter((r) => !r.have), newTasks = tasks.filter((r) => !r.have);
+    const day = (s) => (s ? fmtDate(s, { weekday: "short", month: "short", day: "numeric" }) : "unscheduled");
+    const li = (r, when) => `<li class="${r.have ? "have" : ""}"><span class="when">${esc(when)}</span><span class="what">${esc(r.title)}</span>${r.have ? `<span class="tag dupe">already there</span>` : ""}</li>`;
+    modal.classList.add("wide");
+    $("#modalTitle").textContent = plan.title;
+    $("#modalBody").oninput = null;
+    $("#modalBody").innerHTML = `
+      <p class="import-help">This link adds the following to your grimoire. Anything already there is left out.</p>
+      ${posts.length ? `<h3 class="sub-h">${posts.length} post${posts.length === 1 ? "" : "s"} for the content calendar</h3><ul class="add-list">${posts.map((r) => li(r, day(r.date))).join("")}</ul>` : ""}
+      ${tasks.length ? `<h3 class="sub-h">${tasks.length} task${tasks.length === 1 ? "" : "s"} for the Agenda</h3><ul class="add-list">${tasks.map((r) => li(r, r.due ? `due ${day(r.due)}` : "no due date")).join("")}</ul>` : ""}
+      ${!posts.length && !tasks.length ? `<p class="form-error">There's nothing in this link to add.</p>` : ""}
+      <p class="form-error" id="formError"></p>`;
+    const n = newPosts.length + newTasks.length;
+    $("#modalFoot").innerHTML = `<span class="spacer"></span><button type="button" class="btn ghost" data-close>Not now</button><button type="submit" class="btn primary" ${n ? "" : "disabled"}>${n ? `Add ${n}` : "All already added"}</button>`;
+    modalSubmit = () => {
+      const first = newPosts.map((r) => r.date).filter(Boolean).sort()[0];
+      if (first) { ui.contentMonth = new Date(+first.slice(0, 4), +first.slice(5, 7) - 1, 1); ui.contentDay = first; }
+      newPosts.forEach((r) => Store.upsert("content", {
+        title: r.title, date: r.date, time: r.time, platform: r.platform, format: r.format,
+        status: r.status || "idea", projectId: "", notes: r.notes, link: "",
+      }));
+      newTasks.forEach((r) => Store.upsert("tasks", {
+        title: r.title, due: r.due, notes: r.notes, scope: r.scope || "personal", clientId: "", projectId: "",
+        done: false, doneAt: "", subtasks: r.steps.map((title) => ({ id: Store.uid(), title, done: false })), ...quadrantFields(r.suit),
+      }));
+      const parts = [newPosts.length ? `${newPosts.length} post${newPosts.length === 1 ? "" : "s"}` : "", newTasks.length ? `${newTasks.length} task${newTasks.length === 1 ? "" : "s"}` : ""].filter(Boolean);
+      toast(`Added ${parts.join(" and ")}.`);
+      return true;
+    };
+    modal.showModal();
+    return true;
+  }
+
   /* ── chrome: sections, router, sidebar, moon ─────────── */
   // five sections; the ones holding several pages get a tab strip. A tab is a view, optionally with a ui setting.
   const SECTIONS = [
@@ -3744,6 +3803,7 @@
   }
 
   window.addEventListener("hashchange", () => {
+    if (checkAddLink()) { render(); return; }
     const root = $("#view");
     root.style.animation = "none";
     void root.offsetWidth;
@@ -3821,5 +3881,6 @@
   setInterval(renderSyncStatus, 60000);
   renderSyncStatus();
   renderChrome();
+  checkAddLink();
   render();
 })();
