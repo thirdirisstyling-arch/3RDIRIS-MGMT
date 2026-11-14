@@ -1279,6 +1279,7 @@
       const filtered = ui.ledgerSearch || ui.ledgerType !== "all" || ui.ledgerScope !== "all";
 
       return `
+        ${pastDueCard()}
         <div class="toolbar">
           <div class="month-nav"><button class="icon-btn" data-month="-1" aria-label="Previous month">‹</button><span>${monthLabel(ui.ledgerMonth)}</span><button class="icon-btn" data-month="1" aria-label="Next month">›</button></div>
           ${seg("ledgerView", ui.ledgerView, [["list", "List"], ["calendar", "Calendar"]])}
@@ -1335,6 +1336,26 @@
       }));
     },
   };
+
+  /* recurring payments that came due (in the last month) and were neither recorded nor skipped, whichever month
+     the ledger shows: what the Coffers badge counts */
+  function pastDueCard() {
+    const today = todayStr();
+    const late = expectedEntries(stepDays(today, -31), stepDays(today, -1));
+    if (!late.length) return "";
+    return `<div class="card past-due">
+      <div class="card-head"><h2>Past due</h2><small>${late.length} not yet recorded</small></div>
+      <p class="hint">These recurring entries came due and haven't been recorded. Record one once it's paid (or received), or skip it if it isn't happening this time.</p>
+      <ul class="list">${late.map((e) => {
+        const t = e.source, id = `${t.id}@${e.date}`;
+        return `<li>${dateChip(e.date)}
+          <div class="grow"><span class="title">${esc(t.description)}</span><span class="meta"><span class="neg">${esc(relDay(e.date))}</span> · ${esc(freqLabel(t.frequency))}${t.type === "income" ? " · income" : ""}</span></div>
+          <span class="${t.type === "income" ? "pos" : ""}" style="font-variant-numeric:tabular-nums">${t.type === "income" ? "+" : "−"}${money(t.amount)}</span>
+          <span class="pd-actions"><button class="btn sm primary" data-expected="${esc(id)}">Record</button><button class="btn sm ghost" data-skip="${esc(id)}">Skip</button></span>
+        </li>`;
+      }).join("")}</ul>
+    </div>`;
+  }
 
   /* projected copies of recurring series that fall in a month, shaped like ledger rows */
   function projectedRows(key) {
