@@ -1012,6 +1012,7 @@
     horizonAll: false,
     ledgerSearch: "",
     ledgerView: prefs.ledgerView === "calendar" ? "calendar" : "list",
+    ledgerRange: prefs.ledgerRange === "quarter" ? "quarter" : "month",
     ledgerSort: prefs.ledgerSort && prefs.ledgerSort.key ? prefs.ledgerSort : { key: "date", dir: "desc" },
     ledgerDay: todayStr(),
     ledgerProjected: prefs.ledgerProjected !== false,
@@ -1254,6 +1255,18 @@
     return [t.description, t.notes, c && c.name, cl && cl.name, freqLabel(t.frequency)].some((s) => s && s.toLowerCase().includes(q));
   }
   const ledgerFiltered = (key) => D().transactions.filter((t) => inMonth(t.date, key) && passesFilters(t));
+  // the month on show, or the calendar quarter holding it (Q4 = Oct, Nov, Dec)
+  const ledgerMonths = () => {
+    const m = ui.ledgerMonth;
+    if (ui.ledgerRange !== "quarter") return [m];
+    const q0 = new Date(m.getFullYear(), Math.floor(m.getMonth() / 3) * 3, 1);
+    return [0, 1, 2].map((i) => addMonths(q0, i));
+  };
+  const ledgerRangeLabel = () => {
+    const ms = ledgerMonths();
+    if (ms.length === 1) return monthLabel(ms[0]);
+    return `Q${Math.floor(ms[0].getMonth() / 3) + 1} ${ms[0].getFullYear()} · ${MONTHS[ms[0].getMonth()].slice(0, 3)}–${MONTHS[ms[2].getMonth()].slice(0, 3)}`;
+  };
 
   const catTag = (t) => {
     const c = catById(t.categoryId);
@@ -1266,10 +1279,11 @@
     title: "Ledger",
     actions: () => `<button class="btn ghost" data-act="import">Import</button><button class="btn" data-act="add-income">+ Income</button><button class="btn primary" data-act="add-expense">+ Expense</button>`,
     render() {
-      const key = monthKey(ui.ledgerMonth);
+      const keys = ledgerMonths().map(monthKey);
+      const quarter = keys.length > 1;
       const latest = latestBySeries();
-      const rows = ledgerFiltered(key).map((t) => ({ ...t, _due: nextDueOf(t, latest) }));
-      const projected = ui.ledgerProjected ? projectedRows(key) : [];
+      const rows = keys.flatMap((k) => ledgerFiltered(k)).map((t) => ({ ...t, _due: nextDueOf(t, latest) }));
+      const projected = ui.ledgerProjected ? keys.flatMap((k) => projectedRows(k)) : [];
       const inc = rows.filter((r) => r.type === "income").reduce((s, r) => s + r.amount, 0);
       const exp = rows.filter((r) => r.type === "expense").reduce((s, r) => s + r.amount, 0);
       const pInc = projected.filter((r) => r.type === "income" && !r.skipped).reduce((s, r) => s + r.amount, 0);
@@ -1281,7 +1295,8 @@
       return `
         ${pastDueCard()}
         <div class="toolbar">
-          <div class="month-nav"><button class="icon-btn" data-month="-1" aria-label="Previous month">‹</button><span>${monthLabel(ui.ledgerMonth)}</span><button class="icon-btn" data-month="1" aria-label="Next month">›</button></div>
+          <div class="month-nav"><button class="icon-btn" data-month="${quarter ? -3 : -1}" aria-label="Previous ${quarter ? "quarter" : "month"}">‹</button><span>${esc(ledgerRangeLabel())}</span><button class="icon-btn" data-month="${quarter ? 3 : 1}" aria-label="Next ${quarter ? "quarter" : "month"}">›</button></div>
+          ${seg("ledgerRange", ui.ledgerRange, [["month", "Month"], ["quarter", "Quarter"]])}
           ${seg("ledgerView", ui.ledgerView, [["list", "List"], ["calendar", "Calendar"]])}
           ${seg("ledgerType", ui.ledgerType, [["all", "All"], ["expense", "Expenses"], ["income", "Income"]])}
           ${seg("ledgerScope", ui.ledgerScope, [["all", "Both purses"], ["personal", "Personal"], ["business", "Business"]])}
@@ -1293,14 +1308,16 @@
         <div class="grid cols-3 stats" style="margin-bottom:18px">
           <div class="card stat"><div class="label">Income</div><div class="value pos">${money(inc)}</div>${pInc ? pSub(money(pInc), "+ projected") : ""}</div>
           <div class="card stat"><div class="label">Expenses</div><div class="value">${money(exp)}</div>${pExp ? pSub(money(pExp), "+ projected") : ""}</div>
-          <div class="card stat"><div class="label">Balance</div><div class="value ${inc - exp >= 0 ? "pos" : "neg"}">${money(inc - exp)}</div>${pSub(`<b class="${inc + pInc - exp - pExp >= 0 ? "pos" : "neg"}">${money(inc + pInc - exp - pExp)}</b>`, "projected month end")}</div>
+          <div class="card stat"><div class="label">Balance</div><div class="value ${inc - exp >= 0 ? "pos" : "neg"}">${money(inc - exp)}</div>${pSub(`<b class="${inc + pInc - exp - pExp >= 0 ? "pos" : "neg"}">${money(inc + pInc - exp - pExp)}</b>`, quarter ? "projected quarter end" : "projected month end")}</div>
         </div>
-        ${ui.ledgerView === "calendar" ? ledgerCalendar() : ledgerTable(sortTx([...rows, ...projected]), filtered)}`;
+        ${quarter && ui.ledgerView !== "calendar" ? quarterBreakdown(keys, rows, projected) : ""}
+        ${ui.ledgerView === "calendar" ? ledgerCalendar(ledgerMonths()) : ledgerTable(sortTx([...rows, ...projected]), filtered, quarter)}`;
     },
     bind(root) {
       $$("[data-month]", root).forEach((b) => b.addEventListener("click", () => {
         ui.ledgerMonth = addMonths(ui.ledgerMonth, +b.dataset.month);
-        ui.ledgerDay = monthKey(ui.ledgerMonth) === monthKey(new Date()) ? todayStr() : ymd(ui.ledgerMonth);
+        const shown = ledgerMonths().map(monthKey);
+        ui.ledgerDay = shown.includes(monthKey(new Date())) ? todayStr() : ymd(ledgerMonths()[0]);
         render();
       }));
       bindSegments(root);
@@ -1368,8 +1385,22 @@
     }));
   }
 
-  function ledgerTable(rows, filtered) {
-    if (!rows.length) return `<div class="card">${empty("✒", filtered ? "No entries match." : "No entries for this month yet.")}</div>`;
+  // a quarter at a glance: each month's income, spending and net, recorded plus projected
+  function quarterBreakdown(keys, rows, projected) {
+    const sum = (list, k, type) => list.filter((r) => r.date.slice(0, 7) === k && r.type === type && !r.skipped).reduce((s, r) => s + r.amount, 0);
+    const cells = keys.map((k) => {
+      const inc = sum(rows, k, "income"), exp = sum(rows, k, "expense"), pi = sum(projected, k, "income"), pe = sum(projected, k, "expense");
+      const net = inc + pi - exp - pe;
+      return `<div class="qb-month"><h3>${MONTHS[+k.slice(5, 7) - 1]}</h3>
+        <p><span>In</span><b class="pos">${money(inc)}</b>${pi ? `<small>+ ${money(pi)} projected</small>` : ""}</p>
+        <p><span>Out</span><b>${money(exp)}</b>${pe ? `<small>+ ${money(pe)} projected</small>` : ""}</p>
+        <p class="qb-net"><span>Net</span><b class="${net >= 0 ? "pos" : "neg"}">${money(net)}</b></p></div>`;
+    }).join("");
+    return `<div class="card quarter-breakdown"><div class="qb-grid">${cells}</div></div>`;
+  }
+
+  function ledgerTable(rows, filtered, quarter = false) {
+    if (!rows.length) return `<div class="card">${empty("✒", filtered ? "No entries match." : quarter ? "No entries for this quarter yet." : "No entries for this month yet.")}</div>`;
     const { key, dir } = ui.ledgerSort;
     const th = (k, label, cls = "") => `<th class="${cls}" aria-sort="${key === k ? (dir === "asc" ? "ascending" : "descending") : "none"}"><button class="sort ${key === k ? "on" : ""}" data-sort="${k}">${label}<span class="arrow">${key === k ? (dir === "asc" ? "▲" : "▼") : "◆"}</span></button></th>`;
     return `<div class="card"><div class="table-wrap"><table>
@@ -1400,13 +1431,11 @@
       }).join("")}</tbody></table></div></div>`;
   }
 
-  function ledgerCalendar() {
-    const m = ui.ledgerMonth;
+  function ledgerCalendar(months = [ui.ledgerMonth]) {
     const ws = Number(D().settings.weekStart) || 0;
-    const first = new Date(m.getFullYear(), m.getMonth(), 1);
-    const start = new Date(first);
-    start.setDate(1 - ((first.getDay() - ws + 7) % 7));
-    const gridEnd = new Date(start); gridEnd.setDate(start.getDate() + 41);
+    const gridStart = (m) => { const first = new Date(m.getFullYear(), m.getMonth(), 1), st = new Date(first); st.setDate(1 - ((first.getDay() - ws + 7) % 7)); return st; };
+    const start = gridStart(months[0]);
+    const gridEnd = gridStart(months[months.length - 1]); gridEnd.setDate(gridEnd.getDate() + 41);
     const byDate = {}, dueBy = {}, expBy = {};
     const push = (o, k, v) => (o[k] = o[k] || []).push(v);
     // leading/trailing days from neighbouring months show too, under the same filters
@@ -1417,6 +1446,8 @@
     if (ui.ledgerProjected) expectedEntries(ymd(start), ymd(gridEnd)).filter((e) => passesFilters(e.source)).forEach((e) => push(expBy, e.date, e));
 
     const today = todayStr();
+    const monthCells = (m) => {
+    const start = gridStart(m);
     let cells = "";
     for (let i = 0; i < 42; i++) {
       const d = new Date(start); d.setDate(start.getDate() + i);
@@ -1436,7 +1467,10 @@
         ${chips.length > 3 ? `<span class="more">+${chips.length - 3} more</span>` : ""}
       </div>`;
     }
+    return cells;
+    };
     const dows = Array.from({ length: 7 }, (_, i) => `<div class="dow">${DOW[(i + ws) % 7]}</div>`).join("");
+    const grids = months.map((m) => `${months.length > 1 ? `<h3 class="sub-h cal-month">${esc(monthLabel(m))}</h3>` : ""}<div class="calendar ledger-cal">${dows}${monthCells(m)}</div>`).join("");
 
     const day = ui.ledgerDay;
     const dayEvs = byDate[day] || [], dayDues = dueBy[day] || [], dayExp = expBy[day] || [];
@@ -1446,7 +1480,7 @@
     const dayTotal = dayEvs.reduce((a, t) => a + signed(t), 0);
 
     return `<div class="grid split">
-      <div class="card"><div class="calendar ledger-cal">${dows}${cells}</div>
+      <div class="card">${grids}
         <p class="cal-key"><span class="ev exp">spent</span><span class="ev inc">received</span><span class="ev due">⏳ due</span><span class="ev expected">↻ projected</span></p></div>
       <div class="card" style="align-self:start">
         <div class="card-head"><h2>${fmtDate(day, { weekday: "long", month: "long", day: "numeric" })}</h2><button class="btn sm" data-act="add-expense-day">+ Add</button></div>
@@ -1463,7 +1497,7 @@
       const b = e.target.closest("button");
       if (!b) return;
       ui[seg.dataset.ui] = b.dataset.value;
-      if (["ledgerView", "agendaView", "workTab", "contentView", "coffersTab", "planGroup"].includes(seg.dataset.ui)) { prefs[seg.dataset.ui] = b.dataset.value; savePrefs(); }
+      if (["ledgerView", "ledgerRange", "agendaView", "workTab", "contentView", "coffersTab", "planGroup"].includes(seg.dataset.ui)) { prefs[seg.dataset.ui] = b.dataset.value; savePrefs(); }
       render();
     }));
   }
@@ -3615,7 +3649,11 @@
       }
       download(`3rd-iris-backup-${todayStr()}.json`, JSON.stringify(backup), "application/json");
     },
-    csv: () => download(`3rd-iris-ledger-${monthKey(ui.ledgerMonth)}.csv`, toCSV(D().transactions.filter((t) => inMonth(t.date, monthKey(ui.ledgerMonth)))), "text/csv"),
+    csv: () => {
+      const keys = ledgerMonths().map(monthKey);
+      const name = keys.length > 1 ? ledgerRangeLabel().split(" · ")[0].replace(" ", "-") : keys[0];
+      download(`3rd-iris-ledger-${name}.csv`, toCSV(D().transactions.filter((t) => keys.some((k) => inMonth(t.date, k)))), "text/csv");
+    },
     "csv-all": () => download(`3rd-iris-ledger-all.csv`, toCSV(D().transactions), "text/csv"),
     reset: () => openForm({
       title: "Burn the Grimoire?",

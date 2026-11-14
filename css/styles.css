@@ -1139,3 +1139,22 @@ tr.projected.skipped td small, tr.projected.skipped td i { text-decoration: none
   .past-due .list li { flex-wrap: wrap; }
   .past-due .pd-actions { width: 100%; justify-content: flex-end; }
 }
+
+/* a quarter's months side by side */
+.quarter-breakdown { margin-bottom: 18px; padding: 14px 20px; }
+.qb-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; }
+.qb-month { padding: 0 16px; border-left: 1px dashed var(--line); }
+.qb-month:first-child { padding-left: 0; border-left: 0; }
+.qb-month h3 { margin: 0 0 6px; font-family: var(--font-sc); font-weight: normal; font-size: 17px; letter-spacing: .06em; color: var(--parchment); }
+.qb-month p { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 8px; margin: 2px 0; font-size: 16px; }
+.qb-month p span { width: 34px; color: var(--ash); font-style: italic; }
+.qb-month p b { font-weight: 500; font-variant-numeric: tabular-nums; }
+.qb-month p small { flex-basis: 100%; padding-left: 42px; color: var(--ash); font-style: italic; font-size: 13px; }
+.qb-month .qb-net { margin-top: 6px; padding-top: 4px; border-top: 1px solid var(--line-soft); }
+.cal-month { margin: 18px 0 6px; }
+.cal-month:first-child { margin-top: 0; }
+@media (max-width: 600px) {
+  .qb-grid { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .qb-month { padding: 10px 0 0; border-left: 0; border-top: 1px dashed var(--line); }
+  .qb-month:first-child { padding-top: 0; border-top: 0; }
+}
