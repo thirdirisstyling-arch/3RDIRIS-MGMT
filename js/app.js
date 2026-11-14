@@ -1503,7 +1503,14 @@
   }
 
   /* ── Plans: spending you can see coming, so it isn't sporadic ── */
-  const PLAN_KINDS = [["occasion", "Occasion", "an event to pay for"], ["shopping", "Shopping list", "things to buy"]];
+  const PLAN_KINDS = [["occasion", "Occasion", "an event to pay for"], ["shopping", "Shopping list", "things to buy"], ["wishlist", "Wish list", "someday, when you can"]];
+  const planIcon = (p) => (p.kind === "shopping" ? "⚱" : p.kind === "wishlist" ? "✧" : "☾");
+  // a wish list's three levels, between need and want and beyond
+  const WISH_LEVELS = [["needish", "Need-ish", "would really help"], ["want", "Want", "would make me happy"], ["dream", "Dream", "big, or far off"]];
+  const wishLevel = (it) => (WISH_LEVELS.some(([k]) => k === it.wish) ? it.wish : it.need === false ? "want" : "needish");
+  const wishLabel = (it) => WISH_LEVELS.find(([k]) => k === wishLevel(it))[1];
+  // affordable now from what's been set aside toward the list
+  const withinReach = (p, it) => !it.done && itemCost(it) > 0 && (Number(p.saved) || 0) >= itemCost(it);
   const planById = (id) => D().plans.find((p) => p.id === id);
   /* price options for a list item: the same thing at different stores and sizes, compared per unit */
   // "cans" and "can" are the same unit (written without regex lookbehind, which older Safari can't parse)
@@ -1543,13 +1550,15 @@
   function editPlan(p = {}) {
     const isNew = !p.id;
     openForm({
-      title: isNew ? (p.kind === "shopping" ? "New Shopping List" : "Plan an Occasion") : p.name,
+      title: isNew ? (p.kind === "shopping" ? "New Shopping List" : p.kind === "wishlist" ? "New Wish List" : "Plan an Occasion") : p.name,
       values: { kind: "occasion", scope: "personal", saved: "", ...p, budget: p.budget || "", saved: p.saved || "" },
       fields: [
-        { name: "name", label: "Name", required: true, placeholder: p.kind === "shopping" ? "e.g. household restock" : "e.g. Rowan's wedding", span2: true },
+        { name: "name", label: "Name", required: true, placeholder: p.kind === "shopping" ? "e.g. household restock" : p.kind === "wishlist" ? "e.g. art things, studio tech" : "e.g. Rowan's wedding", span2: true },
         { name: "kind", label: "Kind", type: "segmented", options: PLAN_KINDS.map(([value, label]) => ({ value, label })), span2: true },
-        { name: "date", label: "When", type: "date" },
-        { name: "budget", label: "Spending cap (optional)", type: "number", placeholder: "the most you'll spend" },
+        ...(p.kind === "wishlist" ? [] : [
+          { name: "date", label: "When", type: "date" },
+          { name: "budget", label: "Spending cap (optional)", type: "number", placeholder: "the most you'll spend" },
+        ]),
         { name: "categoryId", label: "Budget category", type: "select", options: categoryOptions() },
         { name: "scope", label: "Purse", type: "segmented", options: [{ value: "personal", label: "Personal" }, { value: "business", label: "Business" }] },
         { name: "saved", label: "Set aside so far", type: "number", placeholder: "0" },
@@ -1558,7 +1567,7 @@
       onSubmit: (v) => {
         const id = p.id || Store.uid();
         Store.upsert("plans", { items: [], done: false, ...p, ...v, id, budget: v.budget === "" ? 0 : v.budget, saved: v.saved === "" ? 0 : v.saved, ...(isNew ? { createdAt: new Date().toISOString() } : {}) });
-        toast(isNew ? "Plan made. Add what it needs." : "Saved.");
+        toast(isNew ? (v.kind === "wishlist" ? "Wish list made. Add what you're wishing for." : "Plan made. Add what it needs.") : "Saved.");
         if (isNew) location.hash = `coffers/${id}`;
       },
       extra: isNew ? [] : [{ label: p.done ? "Reopen" : "Mark finished", onClick: () => {
@@ -1587,17 +1596,20 @@
     if (it.done) {
       // un-buying takes back its Ledger entry too
       if (it.txId && D().transactions.some((t) => t.id === it.txId)) Store.remove("transactions", it.txId);
-      updateItems(planId, (list) => list.map((x) => (x.id === itemId ? { ...x, done: false, actual: null, boughtOn: "", txId: "" } : x)));
+      // money drawn from the set-aside pot goes back into it
+      if (Number(it.fromSaved) > 0) Store.upsert("plans", { id: planId, saved: Math.round(((Number(p.saved) || 0) + Number(it.fromSaved)) * 100) / 100 });
+      updateItems(planId, (list) => list.map((x) => (x.id === itemId ? { ...x, done: false, actual: null, boughtOn: "", txId: "", fromSaved: 0 } : x)));
       toast(it.txId ? "Back on the list, and taken out of the Ledger." : "Back on the list.");
       return;
     }
     openForm({
       title: `Bought: ${it.name}`,
       submitLabel: "Mark as bought",
-      values: { actual: Math.round(itemCost(it) * 100) / 100 || "", date: todayStr(), record: "yes", categoryId: p.categoryId || "" },
+      values: { actual: Math.round(itemCost(it) * 100) / 100 || "", date: todayStr(), record: "yes", categoryId: p.categoryId || "", fromSaved: Number(p.saved) > 0 ? "yes" : "no" },
       fields: [
         { name: "actual", label: "What it cost", type: "number", required: true },
         { name: "date", label: "On", type: "date", required: true },
+        ...(Number(p.saved) > 0 ? [{ name: "fromSaved", label: `Paid from the ${money(p.saved)} set aside`, type: "segmented", options: [{ value: "yes", label: "Yes" }, { value: "no", label: "No" }], span2: true }] : []),
         { name: "record", label: "Record it in the Ledger", type: "segmented", options: [{ value: "yes", label: "Yes" }, { value: "no", label: "No, already there" }], span2: true },
         { name: "categoryId", label: "Budget category", type: "select", options: categoryOptions(), span2: true },
       ],
@@ -1610,8 +1622,11 @@
             categoryId: v.categoryId, scope: p.scope || "personal", planId: p.id, clientId: "", frequency: "one-time", notes: it.store ? `bought at ${it.store}` : "", createdAt: new Date().toISOString(),
           });
         }
-        updateItems(planId, (list) => list.map((x) => (x.id === itemId ? { ...x, done: true, actual: Math.round(v.actual * 100) / 100, boughtOn: v.date, txId } : x)));
-        toast(txId ? "Bought, and recorded in the Ledger." : "Bought.");
+        // drawing on the set-aside pot: as much of the cost as it holds
+        const drawn = v.fromSaved === "yes" ? Math.min(Number(p.saved) || 0, Math.round(v.actual * 100) / 100) : 0;
+        if (drawn) Store.upsert("plans", { id: planId, saved: Math.round(((Number(p.saved) || 0) - drawn) * 100) / 100 });
+        updateItems(planId, (list) => list.map((x) => (x.id === itemId ? { ...x, done: true, actual: Math.round(v.actual * 100) / 100, boughtOn: v.date, txId, fromSaved: drawn } : x)));
+        toast(`${txId ? "Bought, and recorded in the Ledger." : "Bought."}${drawn ? ` ${money(drawn)} came from what you set aside.` : ""}`);
       },
     });
   }
@@ -1620,8 +1635,20 @@
     const st = planStats(p);
     const kind = PLAN_KINDS.find(([k]) => k === p.kind) || PLAN_KINDS[0];
     const pct = st.target ? Math.min(100, ((st.spent + st.saved) / st.target) * 100) : 0;
+    if (p.kind === "wishlist") {
+      const left = st.items.filter((it) => !it.done), reach = left.filter((it) => withinReach(p, it));
+      const total = left.reduce((x, it) => x + itemCost(it), 0);
+      const cheapest = left.filter((it) => itemCost(it) > 0).sort((a, b) => itemCost(a) - itemCost(b))[0];
+      return `<article class="card plan-card wishlist" data-plan="${p.id}" tabindex="0">
+        <div class="project-head"><h3>${esc(p.name)}</h3><span class="tag">✧ ${esc(kind[1])}</span></div>
+        <p class="project-meta">${left.length} wished for${st.bought ? ` · ${st.bought} bought` : ""}</p>
+        <p class="plan-figures"><span><b>${money(total)}</b> in all</span>${st.saved ? `<span>${money(st.saved)} set aside</span>` : ""}</p>
+        ${reach.length ? `<p class="plan-next pos">✦ ${reach.length} within reach: ${esc(reach.slice(0, 2).map((it) => it.name).join(", "))}${reach.length > 2 ? "…" : ""}</p>`
+          : cheapest ? `<p class="plan-next">Closest: ${esc(cheapest.name)} · ${money(itemCost(cheapest))}</p>` : `<p class="plan-next">Add what you're wishing for.</p>`}
+      </article>`;
+    }
     return `<article class="card plan-card ${esc(p.kind)}" data-plan="${p.id}" tabindex="0">
-      <div class="project-head"><h3>${esc(p.name)}</h3><span class="tag">${p.kind === "shopping" ? "⚱" : "☾"} ${esc(kind[1])}</span></div>
+      <div class="project-head"><h3>${esc(p.name)}</h3><span class="tag">${planIcon(p)} ${esc(kind[1])}</span></div>
       <p class="project-meta">${p.date ? `${esc(fmtDate(p.date, { weekday: "short", month: "short", day: "numeric" }))} · <span class="${st.days < 0 ? "neg" : st.days <= 14 ? "gold" : ""}">${esc(st.days < 0 ? `${-st.days} days ago` : relDay(p.date))}</span>` : "no date set"}${p.kind === "shopping" ? ` · ${st.bought}/${st.items.length} bought` : ""}</p>
       <div class="bar ${st.over ? "over" : ""}"><span style="width:${pct}%"></span></div>
       <p class="plan-figures"><span><b>${money(st.target)}</b> ${st.cap ? "cap" : "planned"}</span><span>${money(st.spent)} spent</span>${st.saved ? `<span>${money(st.saved)} set aside</span>` : ""}</p>
@@ -1634,7 +1661,9 @@
     const st = planStats(p);
     const kind = PLAN_KINDS.find(([k]) => k === p.kind) || PLAN_KINDS[0];
     const cat = catById(p.categoryId);
-    const sorted = (st.items || []).slice().sort((a, b) => (a.done - b.done) || ((b.need !== false) - (a.need !== false)));
+    const wish = p.kind === "wishlist";
+    const levelRank = (it) => WISH_LEVELS.findIndex(([k]) => k === wishLevel(it));
+    const sorted = (st.items || []).slice().sort((a, b) => (a.done - b.done) || (wish ? levelRank(a) - levelRank(b) || itemCost(a) - itemCost(b) : (b.need !== false) - (a.need !== false)));
     const optionsPanel = (it) => {
       const best = bestOption(it);
       return `<li class="plan-options">
@@ -1659,10 +1688,10 @@
     const row = (it) => {
       const n = (it.options || []).length, open = ui.openItems.has(it.id), best = bestOption(it);
       const picked = (it.options || []).find((o) => o.id === it.pick);
-      return `<li class="plan-item ${it.done ? "done" : ""} ${it.need === false ? "want" : ""}">
+      return `<li class="plan-item ${it.done ? "done" : ""} ${!wish && it.need === false ? "want" : ""} ${wish ? `wish-${wishLevel(it)}` : ""}">
         <button class="check-btn" data-buy="${it.id}" role="checkbox" aria-checked="${!!it.done}" aria-label="${it.done ? "Not bought" : "Bought"}: ${esc(it.name)}"><span>✦</span></button>
         <div class="grow"><button class="item-title" data-item-edit="${it.id}" title="Edit">${esc(it.name)}${it.qty > 1 ? ` <small>× ${esc(it.qty)}</small>` : ""}</button>
-          <span class="meta">${it.need === false ? "want" : "need"}${it.store ? ` · <span class="store">@ ${esc(it.store)}</span>` : ""}${picked && picked.amount ? ` · ${esc(picked.amount)} ${esc(picked.unit || "")}` : ""}${!it.done && best && picked && best.id !== picked.id ? ` · <span class="gold">${esc(best.store)} is better value</span>` : ""}${it.done ? ` · bought ${esc(fmtDate(it.boughtOn || todayStr(), { month: "short", day: "numeric" }))}${it.txId ? " · in the Ledger" : ""}${Number(it.actual) !== (Number(it.est) || 0) * (Number(it.qty) || 1) && it.est ? ` · est. ${money((Number(it.est) || 0) * (Number(it.qty) || 1))}` : ""}` : ""}</span></div>
+          <span class="meta">${wish ? esc(wishLabel(it).toLowerCase()) : it.need === false ? "want" : "need"}${wish && withinReach(p, it) ? ` · <span class="tag reach">✦ within reach</span>` : ""}${it.store ? ` · <span class="store">@ ${esc(it.store)}</span>` : ""}${picked && picked.amount ? ` · ${esc(picked.amount)} ${esc(picked.unit || "")}` : ""}${!it.done && best && picked && best.id !== picked.id ? ` · <span class="gold">${esc(best.store)} is better value</span>` : ""}${it.done ? ` · bought ${esc(fmtDate(it.boughtOn || todayStr(), { month: "short", day: "numeric" }))}${it.txId ? " · in the Ledger" : ""}${Number(it.actual) !== (Number(it.est) || 0) * (Number(it.qty) || 1) && it.est ? ` · est. ${money((Number(it.est) || 0) * (Number(it.qty) || 1))}` : ""}` : ""}</span></div>
         <button class="steps-chip ${open ? "on" : ""}" data-opts="${it.id}" aria-expanded="${open}" title="Compare prices">⚖ ${n ? `${n} price${n === 1 ? "" : "s"}` : "<span class=\"hide-sm\">compare </span>prices"}</button>
         <span class="amt ${it.done ? "" : "est"}">${money(itemCost(it))}</span>
         <button class="step-x" data-item-x="${it.id}" aria-label="Remove ${esc(it.name)}">✕</button>
@@ -1682,15 +1711,25 @@
     return `
       <p style="margin:-10px 0 14px"><a href="#coffers" class="back-link">← The coffers</a></p>
       <div class="card plan-hero">
-        <div class="card-head"><h2>${p.kind === "shopping" ? "⚱" : "☾"} ${esc(kind[1])}</h2><button class="btn sm" data-act="edit-plan" data-id="${p.id}">Amend</button></div>
-        <div class="grid cols-4 stats" style="margin-bottom:12px">
+        <div class="card-head"><h2>${planIcon(p)} ${esc(kind[1])}</h2><button class="btn sm" data-act="edit-plan" data-id="${p.id}">Amend</button></div>
+        ${wish ? (() => {
+          const left = st.items.filter((it) => !it.done), reach = left.filter((it) => withinReach(p, it));
+          const total = left.reduce((x, it) => x + itemCost(it), 0);
+          return `<div class="grid cols-4 stats" style="margin-bottom:12px">
+          <div class="card stat"><div class="label">Wished for</div><div class="value">${money(total)}</div><span class="sub">${left.length} thing${left.length === 1 ? "" : "s"}</span></div>
+          <div class="card stat"><div class="label">Set aside</div><div class="value">${money(st.saved)}</div><span class="sub">saved toward the list</span></div>
+          <div class="card stat"><div class="label">Within reach</div><div class="value ${reach.length ? "pos" : ""}">${reach.length}</div><span class="sub">${reach.length ? "you could buy now" : "keep setting aside"}</span></div>
+          <div class="card stat"><div class="label">Bought</div><div class="value">${money(st.spent)}</div><span class="sub">${st.bought} from this list</span></div>
+        </div>
+        <p class="project-meta">No dates, no pressure: things to buy when you can.${cat ? ` · counts toward <b>${esc(cat.name)}</b>` : ""} · ${esc(p.scope || "personal")}</p>`;
+        })() : `<div class="grid cols-4 stats" style="margin-bottom:12px">
           <div class="card stat"><div class="label">${st.cap ? "Spending cap" : "Planned"}</div><div class="value">${money(st.target)}</div><span class="sub">${st.cap ? `${money(st.planned)} planned` : `${st.items.length} item${st.items.length === 1 ? "" : "s"}`}</span></div>
           <div class="card stat"><div class="label">Spent</div><div class="value">${money(st.spent)}</div><span class="sub">${st.bought} bought</span></div>
           <div class="card stat"><div class="label">Set aside</div><div class="value">${money(st.saved)}</div><span class="sub">saved toward it</span></div>
           <div class="card stat"><div class="label">Still to find</div><div class="value ${st.stillNeeded ? "gold" : "pos"}">${money(st.stillNeeded)}</div><span class="sub">${st.stillNeeded && st.perWeek ? `${money(st.perWeek)} a week for ${st.weeks} week${st.weeks === 1 ? "" : "s"}` : st.stillNeeded ? (st.days !== null && st.days <= 0 ? "the date has come" : "set a date to pace it") : "you're covered"}</span></div>
         </div>
-        <p class="project-meta">${p.date ? `${esc(fmtDate(p.date, { weekday: "long", month: "long", day: "numeric" }))} · ${esc(st.days < 0 ? `${-st.days} days ago` : relDay(p.date))}` : "No date set"}${cat ? ` · counts toward <b>${esc(cat.name)}</b>` : ""} · ${esc(p.scope || "personal")}</p>
-        ${st.over ? `<p class="project-meta neg">The list is ${money(st.over)} over your cap. The wants come to ${money(st.wants)}.</p>` : ""}
+        <p class="project-meta">${p.date ? `${esc(fmtDate(p.date, { weekday: "long", month: "long", day: "numeric" }))} · ${esc(st.days < 0 ? `${-st.days} days ago` : relDay(p.date))}` : "No date set"}${cat ? ` · counts toward <b>${esc(cat.name)}</b>` : ""} · ${esc(p.scope || "personal")}</p>`}
+        ${st.over && !wish ? `<p class="project-meta neg">The list is ${money(st.over)} over your cap. The wants come to ${money(st.wants)}.</p>` : ""}
         ${p.notes ? `<p class="rel-terms">${esc(p.notes)}</p>` : ""}
         <form class="inline-add" id="setAside" autocomplete="off" style="margin-top:12px">
           <input name="amount" type="number" step="0.01" min="0" placeholder="Set aside…" aria-label="Amount to set aside" style="max-width:160px">
@@ -1698,18 +1737,20 @@
         </form>
       </div>
       <div class="card" style="margin-top:18px">
-        <div class="card-head"><h2>${p.kind === "shopping" ? "The list" : "What it needs"}</h2><small>needs ${money(st.needs)} · wants ${money(st.wants)} to go</small></div>
+        <div class="card-head"><h2>${wish ? "The wish list" : p.kind === "shopping" ? "The list" : "What it needs"}</h2><small>${wish ? WISH_LEVELS.map(([k, l]) => { const n = st.items.filter((it) => !it.done && wishLevel(it) === k).length; return n ? `${l.toLowerCase()} ${n}` : ""; }).filter(Boolean).join(" · ") : `needs ${money(st.needs)} · wants ${money(st.wants)} to go`}</small></div>
         <form class="inline-add" id="itemAdd" autocomplete="off">
-          <input name="name" placeholder="${p.kind === "shopping" ? "Add an item…" : "Add a cost (ticket, outfit, gift…)"}" aria-label="New item">
+          <input name="name" placeholder="${wish ? "Something you're wishing for…" : p.kind === "shopping" ? "Add an item…" : "Add a cost (ticket, outfit, gift…)"}" aria-label="New item">
           <input name="est" type="number" step="0.01" min="0" placeholder="est. $" aria-label="Estimated price" style="max-width:110px">
           <input name="qty" type="number" step="1" min="1" value="1" aria-label="Quantity" style="max-width:70px">
           <input name="store" placeholder="where (optional)" list="dl-stores" aria-label="Where you'll buy it" style="max-width:170px">
-          <select name="need" aria-label="Need or want" style="width:auto"><option value="need">need</option><option value="want">want</option></select>
+          ${wish ? `<select name="need" aria-label="How much" style="width:auto">${WISH_LEVELS.map(([k, l]) => `<option value="${k}" ${k === "want" ? "selected" : ""}>${l.toLowerCase()}</option>`).join("")}</select>`
+            : `<select name="need" aria-label="Need or want" style="width:auto"><option value="need">need</option><option value="want">want</option></select>`}
           <button class="btn sm" type="submit">Add</button>
           <button class="btn ghost sm" type="button" data-act="paste-items" data-id="${p.id}">Paste a list</button>
         </form>
         <datalist id="dl-stores">${storesInUse().map((x) => `<option value="${esc(x)}">`).join("")}</datalist>
-        ${sorted.length ? `<div class="toolbar list-tools"><div class="segmented" data-ui="planGroup">${[["none", "One list"], ["store", "By store"]].map(([v, l]) => `<button class="${ui.planGroup === v ? "on" : ""}" data-value="${v}">${l}</button>`).join("")}</div><small>Use ⚖ to compare prices and sizes at different stores.</small></div>${listHTML(sorted)}` : `<p class="arcana-empty">Nothing yet. Add what you need, with a rough price.</p>`}
+        ${wish && sorted.length ? `<p class="capture-hint" style="margin-top:0">Need-ish would really help · Want would make you happy · Dream is big, or far off. ✦ marks anything your set-aside money already covers.</p>` : ""}
+        ${sorted.length ? `<div class="toolbar list-tools"><div class="segmented" data-ui="planGroup">${[["none", "One list"], ["store", "By store"]].map(([v, l]) => `<button class="${ui.planGroup === v ? "on" : ""}" data-value="${v}">${l}</button>`).join("")}</div><small>Use ⚖ to compare prices and sizes at different stores.</small></div>${listHTML(sorted)}` : `<p class="arcana-empty">${wish ? "Nothing yet. Add the art supplies, tech or treasures you're saving toward, with a rough price. Use ⚖ to keep links and compare stores." : "Nothing yet. Add what you need, with a rough price."}</p>`}
         <p class="capture-hint">Tick an item when you buy it: enter what it really cost and it's recorded in the Ledger, so your monthly budget stays true.</p>
       </div>`;
   }
@@ -1725,20 +1766,23 @@
   }
 
   function editItem(planId, itemId) {
-    const it = ((planById(planId) || {}).items || []).find((x) => x.id === itemId);
+    const plan = planById(planId) || {}, it = (plan.items || []).find((x) => x.id === itemId);
     if (!it) return;
+    const wish = plan.kind === "wishlist";
     openForm({
       title: it.name,
-      values: { name: it.name, est: it.est || "", qty: it.qty || 1, store: it.store || "", need: it.need === false ? "want" : "need" },
+      values: { name: it.name, est: it.est || "", qty: it.qty || 1, store: it.store || "", need: wish ? wishLevel(it) : it.need === false ? "want" : "need" },
       fields: [
         { name: "name", label: "Item", required: true, span2: true },
         { name: "est", label: "Price each (estimate)", type: "number" },
         { name: "qty", label: "How many", type: "number", step: "1", min: 1 },
         { name: "store", label: "Where you'll buy it", datalist: storesInUse() },
-        { name: "need", label: "Need or want", type: "segmented", options: [{ value: "need", label: "Need" }, { value: "want", label: "Want" }] },
+        wish ? { name: "need", label: "How much", type: "segmented", options: WISH_LEVELS.map(([value, label]) => ({ value, label })) }
+          : { name: "need", label: "Need or want", type: "segmented", options: [{ value: "need", label: "Need" }, { value: "want", label: "Want" }] },
       ],
       onSubmit: (v) => {
-        updateItems(planId, (list) => list.map((x) => (x.id === itemId ? { ...x, name: v.name, est: Math.abs(+v.est || 0), qty: Math.max(1, Math.round(+v.qty || 1)), store: v.store, need: v.need !== "want" } : x)));
+        const level = wish ? { wish: v.need, need: v.need === "needish" } : { need: v.need !== "want" };
+        updateItems(planId, (list) => list.map((x) => (x.id === itemId ? { ...x, name: v.name, est: Math.abs(+v.est || 0), qty: Math.max(1, Math.round(+v.qty || 1)), store: v.store, ...level } : x)));
       },
       onDelete: () => updateItems(planId, (list) => list.filter((x) => x.id !== itemId)),
     });
@@ -1760,7 +1804,7 @@
 
   // plans with a date in a month, plus undated lists still open: what the month has coming
   function plansComingIn(key) {
-    return D().plans.filter((p) => !p.done && (p.items || []).some((it) => !it.done) && (!p.date || p.date.slice(0, 7) === key || (p.date < `${key}-01` && key === monthKey(new Date()))));
+    return D().plans.filter((p) => !p.done && p.kind !== "wishlist" && (p.items || []).some((it) => !it.done) && (!p.date || p.date.slice(0, 7) === key || (p.date < `${key}-01` && key === monthKey(new Date()))));
   }
 
   views.coffers = {
@@ -1768,7 +1812,7 @@
     actions: () => {
       if (routeParam()) return "";
       return ui.coffersTab === "plans"
-        ? `<button class="btn" data-act="add-plan" data-kind="shopping">+ Shopping list</button><button class="btn primary" data-act="add-plan" data-kind="occasion">+ Occasion</button>`
+        ? `<button class="btn" data-act="add-plan" data-kind="wishlist">+ Wish list</button><button class="btn" data-act="add-plan" data-kind="shopping">+ Shopping list</button><button class="btn primary" data-act="add-plan" data-kind="occasion">+ Occasion</button>`
         : `<button class="btn primary" data-act="add-category">+ Category</button>`;
     },
     render() {
@@ -1779,13 +1823,17 @@
       }
       const tabs = ""; // Budget and Plans are tabs of the Coffers section
       if (ui.coffersTab === "plans") {
-        const active = D().plans.filter((x) => !x.done).sort((a, b) => (a.date || "9999").localeCompare(b.date || "9999"));
+        const active = D().plans.filter((x) => !x.done && x.kind !== "wishlist").sort((a, b) => (a.date || "9999").localeCompare(b.date || "9999"));
+        const wishes = D().plans.filter((x) => !x.done && x.kind === "wishlist").sort((a, b) => a.name.localeCompare(b.name));
         const finished = D().plans.filter((x) => x.done);
         const totalNeeded = active.reduce((s, x) => s + planStats(x).stillNeeded, 0);
         const weekly = active.reduce((s, x) => s + (planStats(x).perWeek || 0), 0);
         return tabs + (active.length ? `
           <p class="plans-summary">${money(totalNeeded)} still to find across ${active.length} plan${active.length === 1 ? "" : "s"}${weekly ? ` · about <b>${money(weekly)} a week</b> keeps you on pace` : ""}.</p>
           <div class="grid cols-2 project-grid">${active.map(planCard).join("")}</div>` : `<div class="card">${empty("⚱", "No plans yet. Make an <b>occasion</b> for an event you'll pay for (tickets, outfit, gift, travel), or a <b>shopping list</b> for things to buy. The app works out what to set aside each week.")}</div>`)
+          + `<h2 class="section-h">✧ Wish lists <small>someday, when you can</small></h2>`
+          + (wishes.length ? `<div class="grid cols-2 project-grid">${wishes.map(planCard).join("")}</div>`
+            : `<div class="card wish-empty"><p>Things you'd like to buy eventually but can't yet, like art supplies, a new tablet or a treasure from a maker. No dates, no pressure. Set a little aside when you can and the list shows what's within reach.</p><button class="btn" data-act="add-plan" data-kind="wishlist">+ Start a wish list</button></div>`)
           + (finished.length ? `<details class="finished-plans"><summary>Finished (${finished.length})</summary><div class="grid cols-2 project-grid" style="margin-top:12px">${finished.map(planCard).join("")}</div></details>` : "");
       }
       const key = monthKey(ui.coffersMonth);
@@ -1881,7 +1929,9 @@
         e.preventDefault();
         const f = new FormData(ia), name = String(f.get("name") || "").trim();
         if (!name) return;
-        updateItems(pid, (list) => [...list, { id: Store.uid(), name, est: Math.abs(parseFloat(f.get("est")) || 0), qty: Math.max(1, parseInt(f.get("qty"), 10) || 1), store: String(f.get("store") || "").trim(), need: f.get("need") !== "want", options: [], pick: "", done: false, actual: null, boughtOn: "", txId: "" }]);
+        const lvl = String(f.get("need") || "need");
+        const level = WISH_LEVELS.some(([k]) => k === lvl) ? { wish: lvl, need: lvl === "needish" } : { need: lvl !== "want" };
+        updateItems(pid, (list) => [...list, { id: Store.uid(), name, est: Math.abs(parseFloat(f.get("est")) || 0), qty: Math.max(1, parseInt(f.get("qty"), 10) || 1), store: String(f.get("store") || "").trim(), ...level, options: [], pick: "", done: false, actual: null, boughtOn: "", txId: "" }]);
         $("#itemAdd input[name=name]").focus();
       });
       const sa = $("#setAside", root);
