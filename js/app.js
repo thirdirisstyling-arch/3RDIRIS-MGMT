@@ -3650,14 +3650,43 @@
 
   /* ── add from a link ─────────────────────────
      #add/<payload> opens the app with a ready-made plan to add, e.g. posts and tasks written in a chat.
-     The payload is base64url-encoded JSON: { t: title, p: posts as CSV, k: tasks as CSV }, the same
-     columns the importers read. Nothing is added until it's confirmed, and anything already there is left out. */
+     The payload is base64url-encoded JSON: { t: title, p: posts as CSV, k: tasks as CSV, u: changes as CSV },
+     posts and tasks in the columns the importers read. Changes reschedule posts already in the calendar:
+     columns were (old titles, separated by " | "), title, date, time and status; a post is changed only when
+     exactly one matches. Nothing happens until it's confirmed, and anything already there is left out. */
   function decodeAddLink(hash) {
     const raw = hash.replace(/^#add\//, "").replace(/-/g, "+").replace(/_/g, "/");
     const bin = atob(raw + "=".repeat((4 - (raw.length % 4)) % 4));
     const json = new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
     const d = JSON.parse(json);
-    return { title: String(d.t || "A plan"), posts: String(d.p || ""), tasks: String(d.k || "") };
+    return { title: String(d.t || "A plan"), posts: String(d.p || ""), tasks: String(d.k || ""), updates: String(d.u || "") };
+  }
+
+  // changes to posts already in the calendar, each matched to exactly one post by its title (or an older title)
+  function parseChanges(text) {
+    const rows = Importer.splitRows(text || "");
+    if (rows.length < 2) return [];
+    const head = rows[0].map((c) => c.trim().toLowerCase());
+    const col = (cells, k) => (head.indexOf(k) < 0 ? "" : (cells[head.indexOf(k)] || "").trim());
+    const norm = (t) => (t || "").trim().toLowerCase();
+    const STAGES = CONTENT_STATUS.map(([v]) => v);
+    return rows.slice(1).filter((cells) => cells.some((c) => c.trim())).map((cells) => {
+      const title = col(cells, "title"), date = col(cells, "date"), time = col(cells, "time"), status = col(cells, "status").toLowerCase();
+      const was = [...col(cells, "was").split("|").map((x) => x.trim()).filter(Boolean), title].filter(Boolean);
+      const names = new Set(was.map(norm));
+      const found = D().content.filter((c) => names.has(norm(c.title)));
+      const c = { title, was, post: found.length === 1 ? found[0] : null, why: found.length ? "more than one match, left alone" : "not in your calendar", set: {}, diff: [] };
+      if (!c.post) return c;
+      const p = c.post, set = c.set, diff = c.diff;
+      if (title && title !== p.title) { set.title = title; diff.push("renamed"); }
+      if (/^\d{4}-\d{2}-\d{2}$/.test(date) && date !== p.date) {
+        set.date = date;
+        diff.push(`${p.date ? fmtDate(p.date, { month: "short", day: "numeric" }) : "unscheduled"} → ${fmtDate(date, { weekday: "short", month: "short", day: "numeric" })}`);
+      }
+      if (/^\d{1,2}:\d{2}$/.test(time) && time.padStart(5, "0") !== p.time) { set.time = time.padStart(5, "0"); diff.push(fmtTime(set.time)); }
+      if (STAGES.includes(status) && status !== (p.status || "idea")) { set.status = status; diff.push(labelOf(CONTENT_STATUS, status).toLowerCase()); }
+      return c;
+    });
   }
 
   function checkAddLink() {
@@ -3675,6 +3704,8 @@
     posts.forEach((r) => (r.have = havePosts.has(postKey(r))));
     tasks.forEach((r) => (r.have = haveTasks.has(r.title.toLowerCase())));
     const newPosts = posts.filter((r) => !r.have), newTasks = tasks.filter((r) => !r.have);
+    const changes = parseChanges(plan.updates);
+    const moves = changes.filter((c) => c.post && c.diff.length);
     const day = (s) => (s ? fmtDate(s, { weekday: "short", month: "short", day: "numeric" }) : "unscheduled");
     const li = (r, when) => `<li class="${r.have ? "have" : ""}"><span class="when">${esc(when)}</span><span class="what">${esc(r.title)}</span>${r.have ? `<span class="tag dupe">already there</span>` : ""}</li>`;
     modal.classList.add("wide");
@@ -3684,10 +3715,12 @@
       <p class="import-help">This link adds the following to your grimoire. Anything already there is left out.</p>
       ${posts.length ? `<h3 class="sub-h">${posts.length} post${posts.length === 1 ? "" : "s"} for the content calendar</h3><ul class="add-list">${posts.map((r) => li(r, day(r.date))).join("")}</ul>` : ""}
       ${tasks.length ? `<h3 class="sub-h">${tasks.length} task${tasks.length === 1 ? "" : "s"} for the Agenda</h3><ul class="add-list">${tasks.map((r) => li(r, r.due ? `due ${day(r.due)}` : "no due date")).join("")}</ul>` : ""}
-      ${!posts.length && !tasks.length ? `<p class="form-error">There's nothing in this link to add.</p>` : ""}
+      ${changes.length ? `<h3 class="sub-h">${changes.length} post${changes.length === 1 ? "" : "s"} to update</h3><ul class="add-list">${changes.map((c) => `<li class="${c.post && c.diff.length ? "" : "have"}"><span class="when">${esc(c.post ? (c.diff.length ? c.diff.join(" · ") : "already up to date") : c.why)}</span><span class="what">${esc(c.title || c.was[0])}</span></li>`).join("")}</ul>` : ""}
+      ${!posts.length && !tasks.length && !changes.length ? `<p class="form-error">There's nothing in this link to add.</p>` : ""}
       <p class="form-error" id="formError"></p>`;
-    const n = newPosts.length + newTasks.length;
-    $("#modalFoot").innerHTML = `<span class="spacer"></span><button type="button" class="btn ghost" data-close>Not now</button><button type="submit" class="btn primary" ${n ? "" : "disabled"}>${n ? `Add ${n}` : "All already added"}</button>`;
+    const n = newPosts.length + newTasks.length + moves.length;
+    const verb = newPosts.length + newTasks.length ? (moves.length ? "Apply" : "Add") : "Update";
+    $("#modalFoot").innerHTML = `<span class="spacer"></span><button type="button" class="btn ghost" data-close>Not now</button><button type="submit" class="btn primary" ${n ? "" : "disabled"}>${n ? `${verb} ${n}` : posts.length + tasks.length ? "Nothing new to add" : "Already up to date"}</button>`;
     modalSubmit = () => {
       const first = newPosts.map((r) => r.date).filter(Boolean).sort()[0];
       if (first) { ui.contentMonth = new Date(+first.slice(0, 4), +first.slice(5, 7) - 1, 1); ui.contentDay = first; }
@@ -3699,8 +3732,10 @@
         title: r.title, due: r.due, notes: r.notes, scope: r.scope || "personal", clientId: "", projectId: "",
         done: false, doneAt: "", subtasks: r.steps.map((title) => ({ id: Store.uid(), title, done: false })), ...quadrantFields(r.suit),
       }));
-      const parts = [newPosts.length ? `${newPosts.length} post${newPosts.length === 1 ? "" : "s"}` : "", newTasks.length ? `${newTasks.length} task${newTasks.length === 1 ? "" : "s"}` : ""].filter(Boolean);
-      toast(`Added ${parts.join(" and ")}.`);
+      moves.forEach((c) => Store.upsert("content", { id: c.post.id, ...c.set }));
+      const parts = [newPosts.length ? `added ${newPosts.length} post${newPosts.length === 1 ? "" : "s"}` : "", newTasks.length ? `added ${newTasks.length} task${newTasks.length === 1 ? "" : "s"}` : "", moves.length ? `updated ${moves.length} post${moves.length === 1 ? "" : "s"}` : ""].filter(Boolean);
+      const msg = parts.join(", ");
+      toast(msg.charAt(0).toUpperCase() + msg.slice(1) + ".");
       return true;
     };
     modal.showModal();
