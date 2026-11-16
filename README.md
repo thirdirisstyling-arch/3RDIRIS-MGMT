@@ -30,7 +30,7 @@ Data is saved in the browser's `localStorage`. Use **Settings → Download backu
 
 ### Adding a plan from a link
 
-A link of the form `…/3RDIRIS-MGMT/#add/<code>` opens the app with a ready-made plan of posts and tasks (for example, one written in a chat) and asks before adding anything. Things already in the calendar or on the agenda are left out, so opening a link twice does no harm. A link can also reschedule posts already in the calendar: each change is matched to exactly one post by its title (or an older title), and the dialog shows what moves before anything does. The code is base64url-encoded JSON, `{"t": title, "p": posts, "k": tasks, "u": changes}`, where posts and tasks are CSV in the same columns the importers read, and changes are CSV with `was` (old titles separated by ` | `), `title`, `date`, `time` and `status`.
+A link of the form `…/3RDIRIS-MGMT/#add/<code>` opens the app with a ready-made plan of posts and tasks (for example, one written in a chat) and asks before adding anything. Things already in the calendar or on the agenda are left out, so opening a link twice does no harm. A link can also reschedule posts already in the calendar: each change is matched to exactly one post by its title (or an older title), and the dialog shows what moves before anything does. The code is base64url-encoded JSON, `{"t": title, "p": posts, "k": tasks, "u": changes}`, where posts and tasks are CSV in the same columns the importers read, and changes are CSV with `was` (old titles separated by ` | `), `title`, `date`, `time`, `status` and `notes`.
 
 ### Syncing between devices
 

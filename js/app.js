@@ -3761,7 +3761,7 @@
      #add/<payload> opens the app with a ready-made plan to add, e.g. posts and tasks written in a chat.
      The payload is base64url-encoded JSON: { t: title, p: posts as CSV, k: tasks as CSV, u: changes as CSV },
      posts and tasks in the columns the importers read. Changes reschedule posts already in the calendar:
-     columns were (old titles, separated by " | "), title, date, time and status; a post is changed only when
+     columns were (old titles, separated by " | "), title, date, time, status and notes; a post is changed only when
      exactly one matches. Nothing happens until it's confirmed, and anything already there is left out. */
   function decodeAddLink(hash) {
     const raw = hash.replace(/^#add\//, "").replace(/-/g, "+").replace(/_/g, "/");
@@ -3794,6 +3794,8 @@
       }
       if (/^\d{1,2}:\d{2}$/.test(time) && time.padStart(5, "0") !== p.time) { set.time = time.padStart(5, "0"); diff.push(fmtTime(set.time)); }
       if (STAGES.includes(status) && status !== (p.status || "idea")) { set.status = status; diff.push(labelOf(CONTENT_STATUS, status).toLowerCase()); }
+      const notes = col(cells, "notes");
+      if (notes && notes !== (p.notes || "")) { set.notes = notes; diff.push("new notes"); }
       return c;
     });
   }
