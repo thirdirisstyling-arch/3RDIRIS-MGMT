@@ -1694,6 +1694,7 @@
           <span class="meta">${wish ? esc(wishLabel(it).toLowerCase()) : it.need === false ? "want" : "need"}${wish && withinReach(p, it) ? ` · <span class="tag reach">✦ within reach</span>` : ""}${it.store ? ` · <span class="store">@ ${esc(it.store)}</span>` : ""}${picked && picked.amount ? ` · ${esc(picked.amount)} ${esc(picked.unit || "")}` : ""}${!it.done && best && picked && best.id !== picked.id ? ` · <span class="gold">${esc(best.store)} is better value</span>` : ""}${it.done ? ` · bought ${esc(fmtDate(it.boughtOn || todayStr(), { month: "short", day: "numeric" }))}${it.txId ? " · in the Ledger" : ""}${Number(it.actual) !== (Number(it.est) || 0) * (Number(it.qty) || 1) && it.est ? ` · est. ${money((Number(it.est) || 0) * (Number(it.qty) || 1))}` : ""}` : ""}</span></div>
         <button class="steps-chip ${open ? "on" : ""}" data-opts="${it.id}" aria-expanded="${open}" title="Compare prices">⚖ ${n ? `${n} price${n === 1 ? "" : "s"}` : "<span class=\"hide-sm\">compare </span>prices"}</button>
         <span class="amt ${it.done ? "" : "est"}">${money(itemCost(it))}</span>
+        ${it.done ? "" : `<button class="item-move" data-item-move="${it.id}" aria-label="Move ${esc(it.name)} to another list" title="Move to another list">⇄</button>`}
         <button class="step-x" data-item-x="${it.id}" aria-label="Remove ${esc(it.name)}">✕</button>
       </li>${open ? optionsPanel(it) : ""}`;
     };
@@ -1751,7 +1752,7 @@
         <datalist id="dl-stores">${storesInUse().map((x) => `<option value="${esc(x)}">`).join("")}</datalist>
         ${wish && sorted.length ? `<p class="capture-hint" style="margin-top:0">Need-ish would really help · Want would make you happy · Dream is big, or far off. ✦ marks anything your set-aside money already covers.</p>` : ""}
         ${sorted.length ? `<div class="toolbar list-tools"><div class="segmented" data-ui="planGroup">${[["none", "One list"], ["store", "By store"]].map(([v, l]) => `<button class="${ui.planGroup === v ? "on" : ""}" data-value="${v}">${l}</button>`).join("")}</div><small>Use ⚖ to compare prices and sizes at different stores.</small></div>${listHTML(sorted)}` : `<p class="arcana-empty">${wish ? "Nothing yet. Add the art supplies, tech or treasures you're saving toward, with a rough price. Use ⚖ to keep links and compare stores." : "Nothing yet. Add what you need, with a rough price."}</p>`}
-        <p class="capture-hint">Tick an item when you buy it: enter what it really cost and it's recorded in the Ledger, so your monthly budget stays true.</p>
+        <p class="capture-hint">Tick an item when you buy it: enter what it really cost and it's recorded in the Ledger, so your monthly budget stays true. ⇄ moves an item to another list, ${wish ? "for when it's time to actually buy it" : "such as a wish list when it has to wait"}.</p>
       </div>`;
   }
 
@@ -1785,6 +1786,45 @@
         updateItems(planId, (list) => list.map((x) => (x.id === itemId ? { ...x, name: v.name, est: Math.abs(+v.est || 0), qty: Math.max(1, Math.round(+v.qty || 1)), store: v.store, ...level } : x)));
       },
       onDelete: () => updateItems(planId, (list) => list.filter((x) => x.id !== itemId)),
+      extra: it.done ? [] : [{ label: wish ? "Move to a shopping list…" : "Move to another list…", onClick: () => { moveItem(planId, itemId); return false; } }],
+    });
+  }
+
+  /* moving an item between lists: "I thought I could buy it" ⇄ "someday". Its price, store and price
+     comparisons go with it; need/want becomes need-ish/want (and back), and a dream becomes a want. */
+  function moveItem(planId, itemId) {
+    const from = planById(planId), it = from && (from.items || []).find((x) => x.id === itemId);
+    if (!it || it.done) return;
+    const toWish = from.kind !== "wishlist";
+    const lists = D().plans.filter((p) => !p.done && p.id !== planId)
+      .sort((a, b) => ((a.kind === "wishlist") === toWish ? 0 : 1) - ((b.kind === "wishlist") === toWish ? 0 : 1) || a.name.localeCompare(b.name));
+    const kindName = (p) => (PLAN_KINDS.find(([k]) => k === p.kind) || PLAN_KINDS[0])[1].toLowerCase();
+    const NEW_WISH = "__new_wishlist", NEW_SHOP = "__new_shopping";
+    const options = [
+      ...lists.map((p) => ({ value: p.id, label: `${planIcon(p)} ${p.name} · ${kindName(p)}` })),
+      { value: NEW_WISH, label: "✧ A new wish list" },
+      { value: NEW_SHOP, label: "⚱ A new shopping list" },
+    ];
+    const preferred = lists.find((p) => (p.kind === "wishlist") === toWish);
+    openForm({
+      title: `Move: ${it.name}`,
+      submitLabel: "Move it",
+      values: { to: preferred ? preferred.id : toWish ? NEW_WISH : NEW_SHOP },
+      fields: [{ name: "to", label: "Move to", type: "select", options, span2: true }],
+      onSubmit: (v) => {
+        let target = planById(v.to);
+        if (!target) {
+          const kind = v.to === NEW_SHOP ? "shopping" : "wishlist";
+          target = { id: Store.uid(), name: kind === "wishlist" ? "Wish list" : "Shopping list", kind, items: [], done: false, scope: from.scope || "personal", categoryId: from.categoryId || "", budget: 0, saved: 0, notes: "", createdAt: new Date().toISOString() };
+          Store.upsert("plans", target);
+        }
+        const moved = { ...it };
+        if (target.kind === "wishlist") { moved.wish = from.kind === "wishlist" ? wishLevel(it) : it.need === false ? "want" : "needish"; moved.need = moved.wish === "needish"; }
+        else { moved.need = from.kind === "wishlist" ? wishLevel(it) === "needish" : it.need !== false; delete moved.wish; }
+        updateItems(planId, (list) => list.filter((x) => x.id !== itemId));
+        updateItems(target.id, (list) => [...list, moved]);
+        toast(`Moved to ${target.name}.`);
+      },
     });
   }
 
@@ -1904,6 +1944,7 @@
         if (f && ui.openItems.has(id)) f.focus();
       }));
       $$("[data-item-edit]", root).forEach((b) => b.addEventListener("click", () => editItem(pid, b.dataset.itemEdit)));
+      $$("[data-item-move]", root).forEach((b) => b.addEventListener("click", () => moveItem(pid, b.dataset.itemMove)));
       $$("[data-pick]", root).forEach((b) => b.addEventListener("click", () => {
         const [itemId, optId] = b.dataset.pick.split(":");
         pickOption(pid, itemId, optId);

@@ -1166,3 +1166,7 @@ tr.projected.skipped td small, tr.projected.skipped td i { text-decoration: none
 .section-h { font-family: var(--font-sc); font-weight: normal; font-size: 22px; letter-spacing: .05em; color: var(--parchment); margin: 28px 0 12px; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .section-h small { font-family: var(--font-body); font-style: italic; font-size: 15px; color: var(--ash); letter-spacing: 0; }
 .wish-empty p { margin: 0 0 12px; color: var(--ash); font-style: italic; }
+
+/* moving an item to another list */
+.item-move { background: none; border: 1px solid var(--line); border-radius: 999px; color: var(--ash); cursor: pointer; font-size: 14px; line-height: 1; padding: 4px 8px; flex: none; }
+.item-move:hover, .item-move:focus-visible { color: var(--gold); border-color: var(--gold-dim); outline: none; }
