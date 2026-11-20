@@ -3809,7 +3809,7 @@
     const bin = atob(raw + "=".repeat((4 - (raw.length % 4)) % 4));
     const json = new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
     const d = JSON.parse(json);
-    return { title: String(d.t || "A plan"), posts: String(d.p || ""), tasks: String(d.k || ""), updates: String(d.u || "") };
+    return { title: String(d.t || "A plan"), posts: String(d.p || ""), tasks: String(d.k || ""), updates: String(d.u || ""), workings: Array.isArray(d.w) ? d.w : [] };
   }
 
   // changes to posts already in the calendar, each matched to exactly one post by its title (or an older title)
@@ -3851,10 +3851,22 @@
     const postKey = (c) => `${c.date}|${(c.title || "").trim().toLowerCase()}`;
     const havePosts = new Set(D().content.map(postKey));
     const haveTasks = new Set(D().tasks.filter((t) => !t.done).map((t) => t.title.trim().toLowerCase()));
+    const allTasks = new Set(D().tasks.map((t) => t.title.trim().toLowerCase()));
     const posts = Importer.parsePosts(plan.posts, today).filter((r) => r.ok);
+    // tasks may name the working they belong to, and arrive already done ("done" column; steps marked [x])
+    const taskHead = (Importer.splitRows(plan.tasks || "")[0] || []).map((c) => c.trim().toLowerCase());
+    const taskCol = (r, name) => (taskHead.indexOf(name) < 0 ? "" : String((r.raw || [])[taskHead.indexOf(name)] || "").trim());
     const tasks = Importer.parseTasks(plan.tasks, today).filter((r) => r.ok);
+    tasks.forEach((r) => {
+      r.projectName = taskCol(r, "project") || taskCol(r, "working");
+      r.isDone = /^(yes|done|x|true|✓)$/i.test(taskCol(r, "done"));
+    });
     posts.forEach((r) => (r.have = havePosts.has(postKey(r))));
-    tasks.forEach((r) => (r.have = haveTasks.has(r.title.toLowerCase())));
+    tasks.forEach((r) => (r.have = (r.isDone ? allTasks : haveTasks).has(r.title.toLowerCase())));
+    // workings: { name, description, status, start, target, milestones: [{ title, date, done }] }
+    const byName = (n) => D().projects.find((p) => p.name.trim().toLowerCase() === String(n || "").trim().toLowerCase());
+    const works = plan.workings.filter((w) => w && w.name).map((w) => ({ ...w, have: !!byName(w.name) }));
+    const newWorks = works.filter((w) => !w.have);
     const newPosts = posts.filter((r) => !r.have), newTasks = tasks.filter((r) => !r.have);
     const changes = parseChanges(plan.updates);
     const moves = changes.filter((c) => c.post && c.diff.length);
@@ -3865,15 +3877,23 @@
     $("#modalBody").oninput = null;
     $("#modalBody").innerHTML = `
       <p class="import-help">This link adds the following to your grimoire. Anything already there is left out.</p>
+      ${works.length ? `<h3 class="sub-h">${works.length === 1 ? "A working" : `${works.length} workings`} for Workings</h3><ul class="add-list">${works.map((w) => { const ms = w.milestones || []; return `<li class="${w.have ? "have" : ""}"><span class="when">${esc(`${ms.length} milestone${ms.length === 1 ? "" : "s"}${ms.some((m) => m.done) ? ` · ${ms.filter((m) => m.done).length} reached` : ""}`)}</span><span class="what">⚗ ${esc(w.name)}</span>${w.have ? `<span class="tag dupe">already there</span>` : ""}</li>`; }).join("")}</ul>` : ""}
       ${posts.length ? `<h3 class="sub-h">${posts.length} post${posts.length === 1 ? "" : "s"} for the content calendar</h3><ul class="add-list">${posts.map((r) => li(r, day(r.date))).join("")}</ul>` : ""}
-      ${tasks.length ? `<h3 class="sub-h">${tasks.length} task${tasks.length === 1 ? "" : "s"} for the Agenda</h3><ul class="add-list">${tasks.map((r) => li(r, r.due ? `due ${day(r.due)}` : "no due date")).join("")}</ul>` : ""}
+      ${tasks.length ? `<h3 class="sub-h">${tasks.length} task${tasks.length === 1 ? "" : "s"} for the Agenda</h3><ul class="add-list">${tasks.map((r) => li(r, r.isDone ? "✓ done" : r.due ? `due ${day(r.due)}` : "no due date")).join("")}</ul>` : ""}
       ${changes.length ? `<h3 class="sub-h">${changes.length} post${changes.length === 1 ? "" : "s"} to update</h3><ul class="add-list">${changes.map((c) => `<li class="${c.post && c.diff.length ? "" : "have"}"><span class="when">${esc(c.post ? (c.diff.length ? c.diff.join(" · ") : "already up to date") : c.why)}</span><span class="what">${esc(c.title || c.was[0])}</span></li>`).join("")}</ul>` : ""}
-      ${!posts.length && !tasks.length && !changes.length ? `<p class="form-error">There's nothing in this link to add.</p>` : ""}
+      ${!posts.length && !tasks.length && !changes.length && !works.length ? `<p class="form-error">There's nothing in this link to add.</p>` : ""}
       <p class="form-error" id="formError"></p>`;
-    const n = newPosts.length + newTasks.length + moves.length;
-    const verb = newPosts.length + newTasks.length ? (moves.length ? "Apply" : "Add") : "Update";
-    $("#modalFoot").innerHTML = `<span class="spacer"></span><button type="button" class="btn ghost" data-close>Not now</button><button type="submit" class="btn primary" ${n ? "" : "disabled"}>${n ? `${verb} ${n}` : posts.length + tasks.length ? "Nothing new to add" : "Already up to date"}</button>`;
+    const n = newPosts.length + newTasks.length + moves.length + newWorks.length;
+    const verb = newPosts.length + newTasks.length + newWorks.length ? (moves.length ? "Apply" : "Add") : "Update";
+    $("#modalFoot").innerHTML = `<span class="spacer"></span><button type="button" class="btn ghost" data-close>Not now</button><button type="submit" class="btn primary" ${n ? "" : "disabled"}>${n ? `${verb} ${n}` : posts.length + tasks.length + works.length ? "Nothing new to add" : "Already up to date"}</button>`;
     modalSubmit = () => {
+      newWorks.forEach((w) => Store.upsert("projects", {
+        name: String(w.name), description: String(w.description || ""), status: PROJECT_STATUS.some(([k]) => k === w.status) ? w.status : "working",
+        start: /^\d{4}-\d{2}-\d{2}$/.test(w.start || "") ? w.start : today, target: /^\d{4}-\d{2}-\d{2}$/.test(w.target || "") ? w.target : "",
+        budget: 0, ink: String(w.ink || ""), createdAt: new Date().toISOString(),
+        milestones: (w.milestones || []).filter((m) => m && m.title).map((m) => ({ id: Store.uid(), title: String(m.title), date: /^\d{4}-\d{2}-\d{2}$/.test(m.date || "") ? m.date : "", done: !!m.done })),
+      }));
+      const projectIdOf = (r) => (r.projectName && byName(r.projectName) ? byName(r.projectName).id : "");
       const first = newPosts.map((r) => r.date).filter(Boolean).sort()[0];
       if (first) { ui.contentMonth = new Date(+first.slice(0, 4), +first.slice(5, 7) - 1, 1); ui.contentDay = first; }
       newPosts.forEach((r) => Store.upsert("content", {
@@ -3881,11 +3901,13 @@
         status: r.status || "idea", projectId: "", notes: r.notes, link: "",
       }));
       newTasks.forEach((r) => Store.upsert("tasks", {
-        title: r.title, due: r.due, notes: r.notes, scope: r.scope || "personal", clientId: "", projectId: "",
-        done: false, doneAt: "", subtasks: r.steps.map((title) => ({ id: Store.uid(), title, done: false })), ...quadrantFields(r.suit),
+        title: r.title, due: r.due, notes: r.notes, scope: r.scope || "personal", clientId: "", projectId: projectIdOf(r),
+        done: r.isDone, doneAt: r.isDone ? new Date().toISOString() : "",
+        subtasks: r.steps.map((title) => { const ticked = /^\[x\]\s*/i.test(title); return { id: Store.uid(), title: title.replace(/^\[x\]\s*/i, ""), done: r.isDone || ticked }; }),
+        ...quadrantFields(r.suit),
       }));
       moves.forEach((c) => Store.upsert("content", { id: c.post.id, ...c.set }));
-      const parts = [newPosts.length ? `added ${newPosts.length} post${newPosts.length === 1 ? "" : "s"}` : "", newTasks.length ? `added ${newTasks.length} task${newTasks.length === 1 ? "" : "s"}` : "", moves.length ? `updated ${moves.length} post${moves.length === 1 ? "" : "s"}` : ""].filter(Boolean);
+      const parts = [newWorks.length ? `added ${newWorks.length === 1 ? "a working" : `${newWorks.length} workings`}` : "", newPosts.length ? `added ${newPosts.length} post${newPosts.length === 1 ? "" : "s"}` : "", newTasks.length ? `added ${newTasks.length} task${newTasks.length === 1 ? "" : "s"}` : "", moves.length ? `updated ${moves.length} post${moves.length === 1 ? "" : "s"}` : ""].filter(Boolean);
       const msg = parts.join(", ");
       toast(msg.charAt(0).toUpperCase() + msg.slice(1) + ".");
       return true;
